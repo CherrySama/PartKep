@@ -10,6 +10,7 @@ from configs.groundingdino_cfg import GroundingDINOConfig
 from PIL import Image
 from groundingdino.util.inference import predict
 import groundingdino.datasets.transforms as T
+from torchvision.ops import nms
 
 
 class GroundingDINODetector:
@@ -292,19 +293,70 @@ class GroundingDINODetector:
             print("⚠️  未检测到任何物体")
             return []
         
-        # ==================== 第4步：后处理（下一步实现）====================
-        # TODO: 过滤、NMS、每类保留最高分
+        # ==================== 第4步：后处理 ====================
+        print("🔧 正在后处理检测结果...")
         
-        # ==================== 第5步：返回结果（下一步实现）====================
-        # TODO: 格式化输出
+        # 4.1 转换为numpy数组（方便处理）
+        boxes_np = boxes.cpu().numpy()  # shape: (N, 4), 格式: [cx, cy, w, h], 归一化
+        scores_np = logits.cpu().numpy()  # shape: (N,)
+        labels_list = phrases  # List[str]
         
-        # 临时返回（占位符）
-        print("⏳ 输入验证完成，等待实现后续步骤...")
-        print(f"   原始boxes: {boxes.shape}")
-        print(f"   原始logits: {logits.shape}")
-        print(f"   原始phrases: {phrases}")
+        # 4.2 坐标格式转换: [cx, cy, w, h] -> [x1, y1, x2, y2]
+        # 保持归一化坐标 [0, 1]
+        boxes_xyxy = np.zeros_like(boxes_np)
+        boxes_xyxy[:, 0] = boxes_np[:, 0] - boxes_np[:, 2] / 2  # x1 = cx - w/2
+        boxes_xyxy[:, 1] = boxes_np[:, 1] - boxes_np[:, 3] / 2  # y1 = cy - h/2
+        boxes_xyxy[:, 2] = boxes_np[:, 0] + boxes_np[:, 2] / 2  # x2 = cx + w/2
+        boxes_xyxy[:, 3] = boxes_np[:, 1] + boxes_np[:, 3] / 2  # y2 = cy + h/2
         
-        return []
+        # 确保坐标在[0, 1]范围内
+        boxes_xyxy = np.clip(boxes_xyxy, 0.0, 1.0)
+        
+        # 转换为绝对坐标用于 NMS
+        boxes_abs = boxes_xyxy * np.array([image_width, image_height, 
+                                        image_width, image_height])
+        boxes_tensor = torch.from_numpy(boxes_abs).float()
+        scores_tensor = torch.from_numpy(scores_np).float()
+        keep_indices = nms(boxes_tensor, scores_tensor, self.nms_threshold)
+        keep_indices = keep_indices.numpy()
+        
+        # 过滤结果
+        boxes_xyxy = boxes_xyxy[keep_indices]
+        scores_np = scores_np[keep_indices]
+        phrases = [phrases[i] for i in keep_indices]
+        
+        print(f"  NMS 前: {len(boxes_np)} 个框, NMS 后: {len(boxes_xyxy)} 个框")
+        
+        # 4.3 按类别分组，每类只保留置信度最高的一个
+        results_dict = {}  # {label: (bbox, score)}
+        
+        for i in range(len(labels_list)):
+            label = labels_list[i]
+            score = float(scores_np[i])
+            bbox = boxes_xyxy[i].tolist()  # [x1, y1, x2, y2]
+            
+            # 如果这个类别还没有记录，或者当前分数更高，则更新
+            if label not in results_dict or score > results_dict[label]['score']:
+                results_dict[label] = {
+                    'bbox': bbox,
+                    'label': label,
+                    'score': score
+                }
+        
+        # 4.4 转换为列表并按score降序排列
+        results = list(results_dict.values())
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        print(f"✓ 后处理完成")
+        print(f"  原始检测数: {len(boxes_np)}")
+        print(f"  去重后结果数: {len(results)}")
+        for result in results:
+            print(f"    - {result['label']}: score={result['score']:.3f}, "
+                  f"bbox=[{result['bbox'][0]:.3f}, {result['bbox'][1]:.3f}, "
+                  f"{result['bbox'][2]:.3f}, {result['bbox'][3]:.3f}]")
+        
+        # ==================== 第5步：返回结果 ====================
+        return results
     
     def __repr__(self) -> str:
         """返回检测器的字符串表示"""

@@ -18,9 +18,9 @@ class GroundingDINOConfig:
     MODEL_CHECKPOINT_PATH = str(MODEL_DIR / "groundingdino_swinb_cogcoor.pth")
     
     # 边界框置信度阈值 [0.0, 1.0]
-    BOX_THRESHOLD = 0.35
+    BOX_THRESHOLD = 0.50
     # 文本匹配置信度阈值 [0.0, 1.0]
-    TEXT_THRESHOLD = 0.25
+    TEXT_THRESHOLD = 0.35
     # NMS（非极大值抑制）IoU阈值 [0.0, 1.0]
     NMS_THRESHOLD = 0.8
 
