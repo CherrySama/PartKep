@@ -8,7 +8,7 @@
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from modules import GroundingDINODetector
+from modules import GroundingDINODetector, ImageProcessor
 
 
 def visualize_detections(image, results, save_path="detection_result.jpg"):
@@ -148,7 +148,7 @@ def test_real_image():
         print("🔍 开始检测...")
         results = detector.detect(
             image=image,
-            text_prompt="a cup",
+            text_prompt="cup",
             box_threshold=0.35,
             text_threshold=0.25
         )
@@ -171,8 +171,29 @@ def test_real_image():
                 save_path="images/cup3_detection.jpg"
             )
             print()
+            
+            # 裁剪检测到的物体
+            print("🔪 正在裁剪检测到的物体...")
+            processor = ImageProcessor(output_dir="images/objectlist")
+            crop_results = processor.crop_objects_batch(
+                image=image,
+                detection_results=results,
+                padding=10  # 添加10像素边距
+            )
+            
+            # 显示裁剪结果信息
+            if len(crop_results) > 0:
+                print("\n📊 裁剪结果详情:")
+                print("-" * 60)
+                for i, crop_result in enumerate(crop_results):
+                    print(f"\n[{i+1}] {crop_result['label']}")
+                    print(f"  置信度: {crop_result['score']:.3f}")
+                    print(f"  裁剪尺寸: {crop_result['crop_size'][0]}x{crop_result['crop_size'][1]}")
+                    print(f"  保存路径: {crop_result['save_path']}")
+                print()
+            
         else:
-            print("⚠️  没有检测结果，跳过可视化")
+            print("⚠️  没有检测结果，跳过可视化和裁剪")
         
     except Exception as e:
         print(f"❌ 检测失败: {e}")
