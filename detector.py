@@ -120,7 +120,7 @@ def test_real_image():
     print("-" * 60)
     
     # 读取测试图片
-    image_path = "images/cup3.jpg"
+    image_path = "images/cups.png"
     print(f"📁 读取图片: {image_path}")
     
     try:
@@ -148,7 +148,7 @@ def test_real_image():
         print("🔍 开始检测...")
         results = detector.detect(
             image=image,
-            text_prompt="cup",
+            text_prompt="the right cup on the table which is filled with black coffee.",
             box_threshold=0.35,
             text_threshold=0.25
         )

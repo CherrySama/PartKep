@@ -1,5 +1,5 @@
 """
-Created by Yinghao Ho on 2026-1-26
+Created by Yinghao Ho on 2026-1-31
 """
 
 from typing import List, Dict, Optional, Union, Tuple
@@ -10,23 +10,29 @@ import cv2
 import torch
 from PIL import Image
 
-from sam3.model_builder import build_sam3_image_model
-from sam3.model.sam3_image_processor import Sam3Processor
+from transformers import Sam3Model, Sam3Processor
 from configs.part_config import PartConfig
 
 
 class SAM3Segmenter:
     """
-    SAM3部件分割器
+    SAM3部件分割器 (Hugging Face Transformers版本)
     
     使用SAM3模型分割物体的各个部件，并为每个部件提取一个关键点。
     关键点提取使用质心+最近点投影方法，确保关键点落在mask表面上。
     
+    与GitHub版本的主要区别：
+        - 使用transformers库的统一接口
+        - 自动模型下载和缓存管理
+        - 优化的vision embeddings复用机制
+        - 接口保持完全一致
+    
     工作流程：
         1. 根据物体label从PartConfig获取部件列表
-        2. 使用SAM3逐个分割部件（feature reuse优化）
-        3. 为每个部件提取单个关键点
-        4. 将关键点坐标转换到原始图像坐标系
+        2. 预计算图像的vision embeddings（一次）
+        3. 复用embeddings逐个分割部件（高效）
+        4. 为每个部件提取单个关键点
+        5. 将关键点坐标转换到原始图像坐标系
     
     使用示例：
         >>> segmenter = SAM3Segmenter()
@@ -46,15 +52,22 @@ class SAM3Segmenter:
         初始化SAM3分割器
         
         Args:
-            checkpoint_path: SAM3模型权重路径，如果为None则使用默认路径
+            checkpoint_path: 模型路径。如果为None则使用Hugging Face Hub的默认模型。
+                           可以是：
+                           - None: 使用 "facebook/sam3" (推荐)
+                           - 本地路径: "/path/to/local/model"
+                           - HF模型ID: "facebook/sam3"
             device: 运行设备，"cuda"或"cpu"
         
         Raises:
-            FileNotFoundError: 如果模型文件不存在
             RuntimeError: 如果模型加载失败
+        
+        Notes:
+            - 首次运行会从Hugging Face下载模型（约3.5GB）
+            - 后续运行会使用缓存，无需重复下载
         """
         print("=" * 60)
-        print("初始化 SAM3 分割器")
+        print("初始化 SAM3 分割器 (Hugging Face版本)")
         print("=" * 60)
         
         # 验证设备
@@ -65,27 +78,26 @@ class SAM3Segmenter:
         self.device = device
         print(f"✓ 运行设备: {self.device}")
         
-        # 设置默认模型路径
+        # 确定模型路径
         if checkpoint_path is None:
-            checkpoint_path = "/workspace/PartKep/models/SAM3/models--facebook--sam3/snapshots/3c879f39826c281e95690f02c7821c4de09afae7/sam3.pt"
-            print(f"✓ 使用默认模型路径")
-        
-        self.checkpoint_path = checkpoint_path
-        print(f"  路径: {self.checkpoint_path}")
-        
-        # 验证模型文件存在
-        if not Path(checkpoint_path).exists():
-            raise FileNotFoundError(
-                f"SAM3模型文件不存在: {checkpoint_path}\n"
-                f"请确保已下载模型到正确位置"
-            )
+            model_id = "facebook/sam3"
+            print(f"✓ 使用Hugging Face模型: {model_id}")
+        else:
+            model_id = checkpoint_path
+            print(f"✓ 使用指定模型: {model_id}")
         
         # 加载SAM3模型
         print("\n正在加载 SAM3 模型...")
         try:
-            self.model = build_sam3_image_model(checkpoint_path=checkpoint_path)
-            self.processor = Sam3Processor(self.model)
+            self.model = Sam3Model.from_pretrained(model_id)
+            self.processor = Sam3Processor.from_pretrained(model_id)
+            
+            # 移到指定设备
+            self.model = self.model.to(device)
+            self.model.eval()  # 设置为评估模式
+            
             print("✅ SAM3 模型加载成功！")
+            
         except Exception as e:
             raise RuntimeError(f"SAM3模型加载失败: {e}")
         
@@ -152,41 +164,83 @@ class SAM3Segmenter:
         
         print(f"  部件列表: {parts}")
         
-        # 3. 设置图像（feature reuse优化：只调用一次）
-        print("\n📸 设置图像（提取backbone features）...")
-        inference_state = self.processor.set_image(image_pil)
-        print("✓ 图像特征提取完成")
+        # 3. 预计算图像的vision embeddings（feature reuse优化）
+        print("\n📸 预计算图像特征（一次性）...")
         
-        # 4. 循环处理每个部件
+        try:
+            # 预处理图像
+            img_inputs = self.processor(
+                images=image_pil,
+                return_tensors="pt"
+            ).to(self.device)
+            
+            # 提取vision embeddings（只需要一次）
+            with torch.no_grad():
+                vision_embeds = self.model.get_vision_features(
+                    pixel_values=img_inputs.pixel_values
+                )
+            
+            print("✓ 图像特征提取完成")
+            
+        except Exception as e:
+            raise RuntimeError(f"图像特征提取失败: {e}")
+        
+        # 4. 循环处理每个部件（复用vision embeddings）
         results = []
         
         for idx, part_name in enumerate(parts):
             print(f"\n[{idx+1}/{len(parts)}] 处理部件: {part_name}")
             
             try:
-                # 4.1 使用SAM3分割部件
+                # 4.1 准备文本输入（单独处理text）
                 print(f"  → 调用SAM3分割...")
-                output = self.processor.set_text_prompt(
-                    state=inference_state,
-                    prompt=part_name
+                text_inputs = self.processor(
+                    text=part_name,
+                    return_tensors="pt"
+                ).to(self.device)
+                
+                # 4.2 使用预计算的vision embeddings + 新的text输入
+                with torch.no_grad():
+                    outputs = self.model(
+                        vision_embeds=vision_embeds,
+                        **text_inputs
+                    )
+                
+                # 4.3 后处理
+                results_raw = self.processor.post_process_instance_segmentation(
+                    outputs,
+                    threshold=0.5,
+                    mask_threshold=0.5,
+                    target_sizes=img_inputs.get("original_sizes").tolist()
                 )
                 
                 # 检查是否有检测结果
-                if len(output['masks']) == 0:
+                if len(results_raw) == 0 or len(results_raw[0]['masks']) == 0:
                     print(f"  ⚠️  未检测到部件 '{part_name}'，跳过")
                     continue
                 
                 # 取第一个检测结果（置信度最高）
-                mask_tensor = output['masks'][0]  # shape=(1, H, W), bool
-                score = float(output['scores'][0])
+                result = results_raw[0]
+                mask_tensor = result['masks'][0]  # shape=(H, W), dtype=int64
+                score = float(result['scores'][0])
                 
                 print(f"  ✓ 检测成功，置信度: {score:.3f}")
                 
-                # 4.2 转换mask为numpy格式
-                mask_np = mask_tensor.cpu().numpy().squeeze().astype(np.uint8) * 255
-                print(f"  ✓ Mask shape: {mask_np.shape}")
+                # 4.4 转换mask为numpy格式（处理dtype差异）
+                mask_np = mask_tensor.cpu().numpy()
                 
-                # 4.3 提取关键点（相对于裁剪图）
+                # 关键：HF版本返回int64，需要转换为uint8
+                if mask_np.dtype == bool:
+                    mask_np = mask_np.astype(np.uint8) * 255
+                elif mask_np.dtype in [np.int64, np.int32]:
+                    # HF版本返回0/1的int64，转换为0/255的uint8
+                    mask_np = (mask_np * 255).astype(np.uint8)
+                elif mask_np.dtype in [np.float32, np.float64]:
+                    mask_np = (mask_np * 255).astype(np.uint8)
+                
+                print(f"  ✓ Mask shape: {mask_np.shape}, dtype: {mask_np.dtype}")
+                
+                # 4.5 提取关键点（相对于裁剪图）
                 print(f"  → 提取关键点...")
                 keypoint_crop = self.extract_single_keypoint(mask_np)
                 
@@ -196,7 +250,7 @@ class SAM3Segmenter:
                 
                 print(f"  ✓ 关键点（裁剪图坐标）: ({keypoint_crop[0]:.2f}, {keypoint_crop[1]:.2f})")
                 
-                # 4.4 转换到原图坐标
+                # 4.6 转换到原图坐标
                 keypoint_orig = self.transform_to_original_coords(
                     [keypoint_crop],
                     crop_bbox
@@ -204,7 +258,7 @@ class SAM3Segmenter:
                 
                 print(f"  ✓ 关键点（原图坐标）: ({keypoint_orig[0]:.2f}, {keypoint_orig[1]:.2f})")
                 
-                # 4.5 保存结果
+                # 4.7 保存结果
                 results.append({
                     'part_name': part_name,
                     'keypoint': keypoint_orig,
@@ -216,6 +270,8 @@ class SAM3Segmenter:
                 
             except Exception as e:
                 print(f"  ❌ 处理部件 '{part_name}' 时出错: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         # 5. 输出总结
@@ -255,6 +311,15 @@ class SAM3Segmenter:
             >>> keypoint = SAM3Segmenter.extract_single_keypoint(mask)
             >>> print(keypoint)  # 应该接近 (50.0, 50.0)
         """
+        # 确保是uint8格式（cv2.findContours的要求）
+        if mask_np.dtype != np.uint8:
+            if mask_np.dtype == bool:
+                mask_np = mask_np.astype(np.uint8) * 255
+            elif mask_np.dtype in [np.int64, np.int32]:
+                mask_np = (mask_np * 255).astype(np.uint8)
+            elif mask_np.dtype in [np.float32, np.float64]:
+                mask_np = (mask_np * 255).astype(np.uint8)
+        
         # 1. 提取轮廓
         contours, _ = cv2.findContours(
             mask_np, 
@@ -352,9 +417,9 @@ class SAM3Segmenter:
     def __repr__(self) -> str:
         """返回分割器的字符串表示"""
         return (
-            f"SAM3Segmenter(\n"
+            f"SAM3Segmenter (Hugging Face版本)(\n"
             f"  device={self.device},\n"
-            f"  checkpoint={self.checkpoint_path}\n"
+            f"  model=facebook/sam3\n"
             f")"
         )
 
@@ -362,11 +427,11 @@ class SAM3Segmenter:
 # ==================== 模块测试代码 ====================
 if __name__ == "__main__":
     """
-    测试SAM3Segmenter初始化
-    运行方式: python sam3segmenter.py
+    测试SAM3Segmenter (HF版本) 初始化
+    运行方式: python sam3segmenter_hf.py
     """
     try:
-        print("开始测试 SAM3Segmenter 初始化...\n")
+        print("开始测试 SAM3Segmenter (HF版本) 初始化...\n")
         
         # 测试初始化
         segmenter = SAM3Segmenter(device="cuda")
