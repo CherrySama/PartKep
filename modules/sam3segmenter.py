@@ -12,6 +12,7 @@ from PIL import Image
 
 from transformers import Sam3Model, Sam3Processor
 from configs.part_config import PartConfig
+from pathlib import Path
 
 
 class SAM3Segmenter:
@@ -52,19 +53,8 @@ class SAM3Segmenter:
         初始化SAM3分割器
         
         Args:
-            checkpoint_path: 模型路径。如果为None则使用Hugging Face Hub的默认模型。
-                           可以是：
-                           - None: 使用 "facebook/sam3" (推荐)
-                           - 本地路径: "/path/to/local/model"
-                           - HF模型ID: "facebook/sam3"
+            checkpoint_path: 模型路径。如果为None则自动检测本地模型。
             device: 运行设备，"cuda"或"cpu"
-        
-        Raises:
-            RuntimeError: 如果模型加载失败
-        
-        Notes:
-            - 首次运行会从Hugging Face下载模型（约3.5GB）
-            - 后续运行会使用缓存，无需重复下载
         """
         print("=" * 60)
         print("初始化 SAM3 分割器 (Hugging Face版本)")
@@ -80,21 +70,29 @@ class SAM3Segmenter:
         
         # 确定模型路径
         if checkpoint_path is None:
-            model_id = "facebook/sam3"
-            print(f"✓ 使用Hugging Face模型: {model_id}")
+            # 本地路径
+            local_path = Path("models/sam3")
+            
+            if local_path.exists():
+                model_path = str(local_path)
+                print(f"✓ 使用本地模型: {model_path}")
+            else:
+                model_path = "facebook/sam3"
+                print(f"✓ 使用HF模型: {model_path}")
+                print(f"  提示: 运行 download_models.py 可下载到本地")
         else:
-            model_id = checkpoint_path
-            print(f"✓ 使用指定模型: {model_id}")
+            model_path = checkpoint_path
+            print(f"✓ 使用指定模型: {model_path}")
         
         # 加载SAM3模型
         print("\n正在加载 SAM3 模型...")
         try:
-            self.model = Sam3Model.from_pretrained(model_id)
-            self.processor = Sam3Processor.from_pretrained(model_id)
+            self.model = Sam3Model.from_pretrained(model_path)
+            self.processor = Sam3Processor.from_pretrained(model_path)
             
             # 移到指定设备
             self.model = self.model.to(device)
-            self.model.eval()  # 设置为评估模式
+            self.model.eval()
             
             print("✅ SAM3 模型加载成功！")
             

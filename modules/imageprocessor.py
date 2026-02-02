@@ -13,7 +13,12 @@ from PIL import Image
 
 class ImageProcessor:
     """
-    图像处理器
+    图像处理器（简化坐标系统版本）
+    
+    坐标系统简化 (2026-2-2)：
+        - 直接接收绝对像素坐标（来自GroundingDINO HF版本）
+        - 去掉了不必要的归一化→反归一化转换
+        - 流程更简洁：绝对坐标 → padding → 裁剪
     
     功能：
         - 根据检测结果裁剪物体区域
@@ -53,7 +58,7 @@ class ImageProcessor:
         
         Args:
             image: 原始图像（PIL Image或numpy array）
-            bbox: 归一化坐标 [x1, y1, x2, y2]，范围[0, 1]
+            bbox: 绝对像素坐标 [x1, y1, x2, y2]（浮点数）
             label: 物体类别（如"cup", "bottle"）
             score: 检测置信度
             object_id: 物体ID（用于文件命名，如果为None则自动生成）
@@ -63,8 +68,9 @@ class ImageProcessor:
             Dict: 裁剪结果
             {
                 'label': 'cup',
-                'bbox': [x1, y1, x2, y2],  # 归一化坐标
-                'bbox_pixel': [x1, y1, x2, y2],  # 像素坐标
+                'bbox': [x1, y1, x2, y2],  # 绝对像素坐标（浮点，原始）
+                'bbox_pixel': [x1, y1, x2, y2],  # 像素坐标（整数，用于裁剪）
+                'bbox_float': [x1, y1, x2, y2],  # 像素坐标（浮点，高精度，应用padding后）
                 'score': 0.95,
                 'cropped_image': PIL.Image,  # 裁剪后的图像
                 'save_path': 'images/objectlist/cup_0.jpg',
@@ -93,18 +99,26 @@ class ImageProcessor:
         if len(bbox) != 4:
             raise ValueError(f"bbox必须包含4个值 [x1, y1, x2, y2]，当前: {bbox}")
         
-        # 转换归一化坐标为像素坐标
-        x1_norm, y1_norm, x2_norm, y2_norm = bbox
-        x1 = int(x1_norm * img_width)
-        y1 = int(y1_norm * img_height)
-        x2 = int(x2_norm * img_width)
-        y2 = int(y2_norm * img_height)
+        # ==================== 坐标处理 ====================
+        x1_float, y1_float, x2_float, y2_float = bbox
         
-        # 应用padding（确保不超出图像边界）
-        x1 = max(0, x1 - padding)
-        y1 = max(0, y1 - padding)
-        x2 = min(img_width, x2 + padding)
-        y2 = min(img_height, y2 + padding)
+        # 应用padding到浮点坐标（padding保持整数）
+        x1_float_padded = x1_float - padding
+        y1_float_padded = y1_float - padding
+        x2_float_padded = x2_float + padding
+        y2_float_padded = y2_float + padding
+        
+        # 浮点边界检查（在浮点阶段检查边界，保留更多精度）
+        x1_float_padded = max(0.0, min(x1_float_padded, float(img_width)))
+        y1_float_padded = max(0.0, min(y1_float_padded, float(img_height)))
+        x2_float_padded = max(0.0, min(x2_float_padded, float(img_width)))
+        y2_float_padded = max(0.0, min(y2_float_padded, float(img_height)))
+        
+        # 取整用于裁剪（只在必须裁剪时才转为整数）
+        x1 = int(x1_float_padded)
+        y1 = int(y1_float_padded)
+        x2 = int(x2_float_padded)
+        y2 = int(y2_float_padded)
         
         # 验证裁剪区域
         if x2 <= x1 or y2 <= y1:
@@ -133,8 +147,10 @@ class ImageProcessor:
         # 返回裁剪结果
         return {
             'label': label,
-            'bbox': bbox,  # 归一化坐标
-            'bbox_pixel': [x1, y1, x2, y2],  # 像素坐标
+            'bbox': bbox,  # 绝对像素坐标（浮点，原始）
+            'bbox_pixel': [x1, y1, x2, y2],  # 像素坐标（整数，用于裁剪）
+            'bbox_float': [x1_float_padded, y1_float_padded, 
+                          x2_float_padded, y2_float_padded],  # 浮点坐标（高精度，应用padding后）
             'score': score,
             'cropped_image': cropped_image,
             'save_path': str(save_path),
@@ -216,64 +232,14 @@ class ImageProcessor:
         info = (
             f"类别: {crop_result['label']}\n"
             f"置信度: {crop_result['score']:.3f}\n"
-            f"归一化坐标: {crop_result['bbox']}\n"
-            f"像素坐标: {crop_result['bbox_pixel']}\n"
+            f"绝对坐标（原始）: [{crop_result['bbox'][0]:.2f}, {crop_result['bbox'][1]:.2f}, "
+            f"{crop_result['bbox'][2]:.2f}, {crop_result['bbox'][3]:.2f}]\n"
+            f"像素坐标（整数）: {crop_result['bbox_pixel']}\n"
+            f"像素坐标（浮点，padding后）: [{crop_result['bbox_float'][0]:.4f}, "
+            f"{crop_result['bbox_float'][1]:.4f}, "
+            f"{crop_result['bbox_float'][2]:.4f}, "
+            f"{crop_result['bbox_float'][3]:.4f}]\n"
             f"裁剪尺寸: {crop_result['crop_size'][0]}x{crop_result['crop_size'][1]}\n"
             f"保存路径: {crop_result['save_path']}"
         )
         return info
-
-
-# ==================== 模块测试代码 ====================
-if __name__ == "__main__":
-    """
-    测试ImageProcessor
-    运行方式: python modules/image_processor.py
-    """
-    import sys
-    
-    print("=" * 60)
-    print("测试 ImageProcessor - 图像裁剪功能")
-    print("=" * 60)
-    print()
-    
-    # 创建处理器
-    processor = ImageProcessor(output_dir="images/objectlist")
-    print()
-    
-    # 创建一个测试图像
-    print("📷 创建测试图像...")
-    test_image = Image.new('RGB', (800, 600), color='white')
-    print(f"  图像尺寸: {test_image.size}")
-    print()
-    
-    # 模拟检测结果
-    print("🎯 模拟检测结果...")
-    fake_detections = [
-        {'bbox': [0.1, 0.2, 0.4, 0.6], 'label': 'cup', 'score': 0.95},
-        {'bbox': [0.5, 0.3, 0.8, 0.7], 'label': 'bottle', 'score': 0.87}
-    ]
-    print(f"  检测数量: {len(fake_detections)}")
-    print()
-    
-    # 测试批量裁剪
-    print("🔪 测试批量裁剪...")
-    crop_results = processor.crop_objects_batch(
-        image=test_image,
-        detection_results=fake_detections,
-        padding=10
-    )
-    print()
-    
-    # 显示裁剪结果信息
-    print("📊 裁剪结果详情:")
-    print("-" * 60)
-    for i, result in enumerate(crop_results):
-        print(f"\n[{i+1}]")
-        print(processor.get_crop_info(result))
-    
-    print()
-    print("=" * 60)
-    print("✅ ImageProcessor 测试完成！")
-    print("=" * 60)
-    
