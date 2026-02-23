@@ -1,6 +1,5 @@
 """
 Created by Yinghao Ho on 2026-1-16
-Modified for Hugging Face integration on 2026-1-30
 """
 
 import os
