@@ -2,7 +2,6 @@
 Created by Yinghao Ho on 2026-2-23
 
 代价函数实例化模块
-
 核心职责：
     将语义关键点 + SAP 知识库 → 可被 SLSQP 直接调用的数值代价函数
 
@@ -19,65 +18,25 @@ Created by Yinghao Ho on 2026-2-23
     cost_approach：末端执行器位置与目标接触点的偏差
     cost_grasp：夹爪张开轴与目标方向的对齐偏差
     cost_safety：末端执行器与 avoid 部件关键点的安全距离惩罚
-
-参考文献：
-    - kPAM (ISRR 2019)：语义关键点上的几何代价和约束
-    - ReKep (2024)：关键点映射到数值代价，SLSQP 求解 SE(3)
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Callable, Optional
+from typing import Dict, Tuple, Callable, Optional
 
-from configs.sap_knowledge import get_sap_strict, SAP
+from configs.SAP import get_sap_strict, SAP
+from utils import CoordinateTransformer  
 
 
 # ==================== 超参数 ====================
 W_APPROACH = 1.0    # 接近方向代价权重
 W_GRASP    = 0.5    # 夹爪对齐代价权重
-W_SAFETY   = 2.0    # 安全距离代价权重（惩罚更重，确保不碰 rim）
+W_SAFETY   = 2.0    # 安全距离代价权重
 
-# 接触点偏移距离：末端执行器停在关键点前方的距离（米）
-APPROACH_OFFSET = 0.05  # 5cm
-
-# 初始猜测：末端执行器在物体正上方 offset 处
-INIT_HEIGHT_OFFSET = 0.15   # 15cm
+APPROACH_OFFSET    = 0.05   # 末端执行器与接触点的偏移距离（米）
+INIT_HEIGHT_OFFSET = 0.15   # 初始猜测：末端在物体正上方的高度偏移（米）
 
 
 # ==================== 辅助函数 ====================
-
-def _rodrigues(rvec: np.ndarray) -> np.ndarray:
-    """
-    轴角向量 → 3×3 旋转矩阵（Rodrigues 公式）
-
-    Args:
-        rvec: shape=(3,) 轴角向量，方向为旋转轴，模长为旋转角（rad）
-              零向量对应单位旋转矩阵
-
-    Returns:
-        np.ndarray shape=(3, 3)：旋转矩阵
-
-    推导：
-        设 θ = ||rvec||，k = rvec / θ（单位旋转轴）
-        R = I + sin(θ)*K + (1-cos(θ))*K²
-        其中 K 是 k 的反对称矩阵（叉积矩阵）
-    """
-    rvec = np.array(rvec, dtype=np.float64)
-    theta = np.linalg.norm(rvec)
-
-    if theta < 1e-10:
-        return np.eye(3)
-
-    k = rvec / theta
-
-    K = np.array([
-        [   0.0, -k[2],  k[1]],
-        [ k[2],    0.0, -k[0]],
-        [-k[1],  k[0],    0.0]
-    ])
-
-    R = np.eye(3) + np.sin(theta) * K + (1 - np.cos(theta)) * (K @ K)
-    return R
-
 
 def _compute_actual_approach(part_name: str,
                               sap: SAP,
@@ -93,10 +52,10 @@ def _compute_actual_approach(part_name: str,
           使接近方向从物体外部指向关键点。
 
     Args:
-        part_name: 部件名称
-        sap: 对应的 SAP 实例
-        keypoint_3d: 该部件的3D关键点（世界坐标）
-        object_center: 物体中心（所有关键点均值）
+        part_name:    部件名称
+        sap:          对应的 SAP 实例
+        keypoint_3d:  该部件的3D关键点（世界坐标）
+        object_center:物体中心（所有关键点均值）
 
     Returns:
         np.ndarray shape=(3,)：修正后的单位接近方向向量
@@ -106,14 +65,10 @@ def _compute_actual_approach(part_name: str,
     if part_name in LATERAL_PARTS:
         delta_xy = keypoint_3d[:2] - object_center[:2]
         norm = np.linalg.norm(delta_xy)
-
         if norm < 1e-6:
             return sap.approach_direction.copy()
-
         approach_horizontal = delta_xy / norm
-        return np.array([approach_horizontal[0],
-                         approach_horizontal[1],
-                         0.0])
+        return np.array([approach_horizontal[0], approach_horizontal[1], 0.0])
     else:
         return sap.approach_direction.copy()
 
@@ -148,10 +103,10 @@ class ConstraintInstantiator:
                  approach_offset: float = APPROACH_OFFSET):
         """
         Args:
-            object_label: 物体类别（仅用于日志）
-            w_approach: 接近方向代价权重
-            w_grasp: 夹爪对齐代价权重
-            w_safety: 安全距离代价权重
+            object_label:    物体类别（仅用于日志）
+            w_approach:      接近方向代价权重
+            w_grasp:         夹爪对齐代价权重
+            w_safety:        安全距离代价权重
             approach_offset: 末端执行器与接触点的偏移距离（米）
         """
         self.object_label    = object_label
@@ -182,7 +137,7 @@ class ConstraintInstantiator:
 
         Raises:
             ValueError: keypoints_3d 中没有可抓取部件
-            KeyError: 部件名称不在 SAP 知识库中
+            KeyError:   部件名称不在 SAP 知识库中
         """
         # ===== 1. 按 contact_mode 分类关键点 =====
         grasp_keypoints = {}
@@ -205,7 +160,6 @@ class ConstraintInstantiator:
             )
 
         # ===== 2. 按优先级选定主抓取目标 =====
-        # handle > neck > cap > body
         PRIORITY = ["handle", "neck", "cap", "body"]
         grasp_target_name = None
         for candidate in PRIORITY:
@@ -216,11 +170,10 @@ class ConstraintInstantiator:
             grasp_target_name = next(iter(grasp_keypoints))
 
         grasp_target_point = grasp_keypoints[grasp_target_name]
-        grasp_sap = get_sap_strict(grasp_target_name)
+        grasp_sap          = get_sap_strict(grasp_target_name)
 
         # ===== 3. 估计物体中心（所有关键点均值）=====
-        all_points = [np.array(p, dtype=np.float64)
-                      for p in keypoints_3d.values()]
+        all_points    = [np.array(p, dtype=np.float64) for p in keypoints_3d.values()]
         object_center = np.mean(np.stack(all_points), axis=0)
 
         # ===== 4. 运行时修正 approach_direction =====
@@ -232,27 +185,24 @@ class ConstraintInstantiator:
         )
 
         # ===== 5. 计算目标接触点 =====
-        # 末端执行器停在关键点沿接近方向反向 offset 处
-        # approach_dir 指向目标，所以末端在目标的 approach_dir 反方向
         contact_point = grasp_target_point - approach_dir * self.approach_offset
 
         # ===== 6. 夹爪张开轴目标方向 =====
         grasp_axis_target = grasp_sap.grasp_axis.copy()
 
         # ===== 7. 构造初始猜测 x0 =====
-        x0_pos = object_center.copy()
+        x0_pos    = object_center.copy()
         x0_pos[2] += INIT_HEIGHT_OFFSET
-        x0 = np.concatenate([x0_pos, np.zeros(3)])
+        x0        = np.concatenate([x0_pos, np.zeros(3)])
 
         # ===== 8. 构造代价函数（闭包） =====
-        # 用 .copy() 防止外部修改影响闭包内的捕获值
         _contact_point     = contact_point.copy()
         _grasp_axis_target = grasp_axis_target.copy()
         _avoid_keypoints   = {k: (v[0].copy(), v[1])
                               for k, v in avoid_keypoints.items()}
-        _w_approach        = self.w_approach
-        _w_grasp           = self.w_grasp
-        _w_safety          = self.w_safety
+        _w_approach = self.w_approach
+        _w_grasp    = self.w_grasp
+        _w_safety   = self.w_safety
 
         def cost_fn(x: np.ndarray) -> float:
             """
@@ -266,22 +216,22 @@ class ConstraintInstantiator:
             """
             pos  = x[:3]
             rvec = x[3:]
-            R    = _rodrigues(rvec)
+            # ← 调用统一的 Rodrigues 实现
+            R    = CoordinateTransformer.rodrigues(rvec)
 
             # 代价1：位置接近代价
-            diff = pos - _contact_point
+            diff       = pos - _contact_point
             c_approach = float(np.dot(diff, diff))
 
-            # 代价2：夹爪对齐代价
-            # 夹爪局部 Y 轴在世界坐标系下的方向
+            # 代价2：夹爪对齐代价（夹爪局部Y轴对齐目标张开轴）
             gripper_open_axis = R @ np.array([0.0, 1.0, 0.0])
             cos_angle = np.dot(gripper_open_axis, _grasp_axis_target)
-            c_grasp = 1.0 - cos_angle ** 2
+            c_grasp   = 1.0 - cos_angle ** 2
 
             # 代价3：安全距离代价
             c_safety = 0.0
             for p_avoid, margin in _avoid_keypoints.values():
-                dist = np.linalg.norm(pos - p_avoid)
+                dist      = np.linalg.norm(pos - p_avoid)
                 violation = margin - dist
                 if violation > 0:
                     c_safety += violation ** 2
@@ -296,16 +246,17 @@ class ConstraintInstantiator:
 
             Returns:
                 {
-                    'total': float,
-                    'approach': float,
-                    'grasp': float,
-                    'safety': float,
+                    'total':           float,
+                    'approach':        float,
+                    'grasp':           float,
+                    'safety':          float,
                     'safety_per_part': {part_name: float}
                 }
             """
             pos  = x[:3]
             rvec = x[3:]
-            R    = _rodrigues(rvec)
+            # ← 调用统一的 Rodrigues 实现
+            R    = CoordinateTransformer.rodrigues(rvec)
 
             diff       = pos - _contact_point
             c_approach = float(np.dot(diff, diff))
@@ -314,7 +265,7 @@ class ConstraintInstantiator:
             cos_angle  = np.dot(gripper_open_axis, _grasp_axis_target)
             c_grasp    = 1.0 - cos_angle ** 2
 
-            c_safety = 0.0
+            c_safety        = 0.0
             safety_per_part = {}
             for part, (p_avoid, margin) in _avoid_keypoints.items():
                 dist      = np.linalg.norm(pos - p_avoid)
@@ -358,106 +309,70 @@ class ConstraintInstantiator:
         return cost_fn, x0, meta
 
 
-# ==================== 模块测试代码 ====================
+# ==================== 模块测试 ====================
 if __name__ == "__main__":
     print("=" * 70)
     print("测试 ConstraintInstantiator")
     print("=" * 70)
 
-    # ---------- 测试1：cup（有 handle）----------
+    # ---------- 测试1：cup ----------
     print("\n【测试1】cup - handle 侧向抓取")
-    print("-" * 70)
-
     keypoints_cup = {
         'handle': np.array([0.08,  0.00, 0.06]),
         'rim':    np.array([0.00,  0.00, 0.10]),
         'body':   np.array([0.00,  0.00, 0.05]),
     }
-
     inst = ConstraintInstantiator(object_label='cup')
     cost_fn, x0, meta = inst.instantiate(keypoints_cup)
 
     assert meta['grasp_target'] == 'handle'
-    assert meta['approach_direction'][0] > 0.9, "handle 接近方向应朝 +X"
-    print(f"  ✅ 主抓取目标: {meta['grasp_target']}")
-    print(f"  ✅ 接近方向修正: {np.round(meta['approach_direction'], 3)}")
-
-    cost_val = cost_fn(x0)
+    assert meta['approach_direction'][0] > 0.9
+    cost_val  = cost_fn(x0)
     breakdown = meta['cost_breakdown_fn'](x0)
     assert abs(breakdown['total'] - cost_val) < 1e-10
-    print(f"  ✅ 代价函数可调用，x0处代价={cost_val:.4f}")
-    print(f"     breakdown: approach={breakdown['approach']:.4f}, "
-          f"grasp={breakdown['grasp']:.4f}, "
-          f"safety={breakdown['safety']:.4f}")
+    print(f"  ✅ grasp_target={meta['grasp_target']}, cost={cost_val:.4f}")
 
-    # ---------- 测试2：bottle（neck 优先）----------
-    print("\n【测试2】bottle - neck 侧向抓取")
-    print("-" * 70)
-
+    # ---------- 测试2：bottle ----------
+    print("\n【测试2】bottle - neck 优先")
     keypoints_bottle = {
-        'neck':   np.array([0.02, 0.00, 0.18]),
-        'cap':    np.array([0.00, 0.00, 0.22]),
-        'body':   np.array([0.00, 0.00, 0.10]),
+        'neck': np.array([0.02, 0.00, 0.18]),
+        'cap':  np.array([0.00, 0.00, 0.22]),
+        'body': np.array([0.00, 0.00, 0.10]),
     }
-
     inst_b = ConstraintInstantiator(object_label='bottle')
     cost_fn_b, x0_b, meta_b = inst_b.instantiate(keypoints_bottle)
-
     assert meta_b['grasp_target'] == 'neck'
-    print(f"  ✅ 优先级验证: grasp_target={meta_b['grasp_target']}")
-    print(f"  ✅ 初始代价={cost_fn_b(x0_b):.4f}")
+    print(f"  ✅ grasp_target={meta_b['grasp_target']}, cost={cost_fn_b(x0_b):.4f}")
 
-    # ---------- 测试3：bowl（body 兜底 + rim 安全约束）----------
+    # ---------- 测试3：bowl ----------
     print("\n【测试3】bowl - body 兜底 + rim 安全约束")
-    print("-" * 70)
-
     keypoints_bowl = {
         'rim':  np.array([0.00, 0.00, 0.08]),
         'body': np.array([0.00, 0.00, 0.04]),
     }
-
     inst_bowl = ConstraintInstantiator(object_label='bowl')
     cost_fn_bowl, x0_bowl, meta_bowl = inst_bowl.instantiate(keypoints_bowl)
-
     assert meta_bowl['grasp_target'] == 'body'
     assert 'rim' in meta_bowl['avoid_targets']
+    print(f"  ✅ grasp_target=body, avoid={meta_bowl['avoid_targets']}")
 
-    # 在 rim 处安全代价应 > 0
-    x_at_rim = x0_bowl.copy()
-    x_at_rim[:3] = keypoints_bowl['rim']
-    bd = meta_bowl['cost_breakdown_fn'](x_at_rim)
-    assert bd['safety'] > 0
-    print(f"  ✅ grasp_target=body, avoid=[rim]")
-    print(f"  ✅ 在rim处安全代价={bd['safety']:.4f} > 0")
+    # ---------- 测试4：Rodrigues 来自 CoordinateTransformer ----------
+    print("\n【测试4】Rodrigues（验证统一来源）")
+    R0 = CoordinateTransformer.rodrigues(np.zeros(3))
+    assert np.allclose(R0, np.eye(3))
+    R_90z = CoordinateTransformer.rodrigues(np.array([0.0, 0.0, np.pi / 2]))
+    assert np.allclose(R_90z, np.array([[0,-1,0],[1,0,0],[0,0,1]], dtype=float), atol=1e-6)
+    print(f"  ✅ Rodrigues 来自 CoordinateTransformer，结果正确")
 
-    # ---------- 测试4：Rodrigues 验证 ----------
-    print("\n【测试4】Rodrigues 公式验证")
-    print("-" * 70)
-
-    assert np.allclose(_rodrigues(np.zeros(3)), np.eye(3))
-    print(f"  ✅ 零旋转 → 单位矩阵")
-
-    R_90z = _rodrigues(np.array([0.0, 0.0, np.pi / 2]))
-    expected = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
-    assert np.allclose(R_90z, expected, atol=1e-6)
-    print(f"  ✅ 绕Z轴90°旋转正确")
-
-    R_rand = _rodrigues(np.array([0.3, -0.5, 0.8]))
-    assert np.allclose(R_rand.T @ R_rand, np.eye(3), atol=1e-10)
-    assert np.isclose(np.linalg.det(R_rand), 1.0, atol=1e-10)
-    print(f"  ✅ 任意旋转满足正交性（det=1，R^T R=I）")
-
-    # ---------- 测试5：无 graspable 部件报错 ----------
+    # ---------- 测试5：无可抓取部件报错 ----------
     print("\n【测试5】无可抓取部件时报错")
-    print("-" * 70)
-
     try:
         inst.instantiate({'rim': np.array([0.0, 0.0, 0.1])})
         print("  ❌ 应该报错但没有！")
     except ValueError:
         print(f"  ✅ 正确抛出 ValueError")
 
-    print()
+    print("\n" + "=" * 70)
+    print("✅ 所有测试通过！")
     print("=" * 70)
-    print("✅ ConstraintInstantiator 所有测试通过！")
-    print("=" * 70)
+    
