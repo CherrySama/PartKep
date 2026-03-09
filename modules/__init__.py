@@ -8,6 +8,7 @@ from .sam3segmenter import SAM3Segmenter
 from .constraintsInst import ConstraintInstantiator
 from .poseSolver import PoseSolver
 from .IKSolver import IKSolver
+from .taskParser import TaskSpec, TaskParser
 
-__all__ = ['GroundingDINODetector', 'ImageProcessor', 'SAM3Segmenter', 'ConstraintInstantiator', 'PoseSolver', 'IKSolver']
+__all__ = ['GroundingDINODetector', 'ImageProcessor', 'SAM3Segmenter', 'ConstraintInstantiator', 'PoseSolver', 'IKSolver', 'TaskSpec', 'TaskParser']
 __version__ = "0.1.0"
