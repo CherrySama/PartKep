@@ -32,7 +32,7 @@ class GroundingDINOConfig:
     # 如果已经下载模型到本地，设置此路径可以离线使用
     # 例如："/path/to/downloaded/grounding-dino-base"
     # 设置为None时使用在线模型
-    LOCAL_MODEL_PATH = None
+    LOCAL_MODEL_PATH = "models/grounding-dino-base"
     
     # ==================== 检测参数配置 ====================
     # 边界框置信度阈值 [0.0, 1.0]

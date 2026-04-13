@@ -9,7 +9,7 @@ import numpy as np
 import cv2
 import torch
 from PIL import Image
-
+from configs.sam3_cfg import SAM3Config
 from transformers import Sam3Model, Sam3Processor
 from configs.part_config import PartConfig
 from pathlib import Path
@@ -47,13 +47,8 @@ class SAM3Segmenter:
         print(f"✓ 运行设备: {self.device}")
 
         if checkpoint_path is None:
-            local_path = Path("models/sam3")
-            if local_path.exists():
-                model_path = str(local_path)
-                print(f"✓ 使用本地模型: {model_path}")
-            else:
-                model_path = "facebook/sam3"
-                print(f"✓ 使用HF模型: {model_path}")
+            model_path = SAM3Config.get_model_path()
+            print(f"✓ 使用模型: {model_path}")
         else:
             model_path = checkpoint_path
             print(f"✓ 使用指定模型: {model_path}")

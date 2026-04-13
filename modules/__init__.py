@@ -9,7 +9,7 @@ from .constraintsInst import ConstraintInstantiator
 from .poseSolver import PoseSolver
 from .IKSolver import IKSolver
 from .taskParser import TaskSpec, TaskParser
-from .VLMDecider import VLMDecision, VLMDecider
+from .vlmDecider import VLMDecision, VLMDecider
 
-__all__ = ['GroundingDINODetector', 'ImageProcessor', 'SAM3Segmenter', 'ConstraintInstantiator', 'PoseSolver', 'IKSolver', 'TaskSpec', 'TaskParser', 'VLMDecision', 'VLMDecider']
+__all__ = ['GroundingDINODetector', 'ImageProcessor', 'SAM3Segmenter', 'ConstraintInstantiator', 'PoseSolver', 'IKSolver', 'TaskSpec', 'TaskParser', 'VLMDecision', 'vlmDecider']
 __version__ = "0.1.0"
