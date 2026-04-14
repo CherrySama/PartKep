@@ -290,7 +290,7 @@ class VLMDecider:
             self,
             vlm_endpoint:         Optional[str] = None,
             confidence_threshold: float = CONFIDENCE_THRESHOLD,
-            request_timeout:      int   = 30,
+            request_timeout:      int   = 120,
             verbose:              bool  = True,
     ):
         """

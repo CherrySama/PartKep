@@ -77,7 +77,8 @@ SIMULATED_SCENES = {
 # ==================== 单场景测试函数 ====================
 
 def run_scene(scene_name: str, scene: dict,
-              inst_cls, pose_cls, ik_cls, q_home) -> dict:
+              inst_cls, pose_cls, ik_cls, q_home, 
+              fallback_decision=None) -> dict:
     """
     对单个物体场景运行完整 Step 5 链路并计时
 
@@ -119,8 +120,8 @@ def run_scene(scene_name: str, scene: dict,
     print(f"\n  {CYAN}[ Stage A ]  ConstraintInstantiator{RESET}")
     t0 = time.perf_counter()
     try:
-        instantiator    = inst_cls(object_label=label)
-        cost_fn, x0, meta = instantiator.instantiate(kps)
+        instantiator      = inst_cls(verbose=False)
+        cost_fn, x0, meta = instantiator.instantiate(kps, fallback_decision)
         t_inst          = time.perf_counter() - t0
         summary["t_instantiate"] = t_inst
         summary["grasp_target"]  = meta["grasp_target"]
@@ -251,6 +252,7 @@ def main():
         from modules.constraintsInst import ConstraintInstantiator
         from modules.poseSolver      import PoseSolver
         from modules.IKSolver        import IKSolver, Q_HOME
+        from modules.vlmDecider      import FALLBACK_DECISION   # ← 新增
         ok("模块导入成功")
     except ImportError as e:
         fail(f"模块导入失败: {e}")
@@ -266,6 +268,7 @@ def main():
             pose_cls=PoseSolver,
             ik_cls=IKSolver,
             q_home=Q_HOME,
+            fallback_decision=FALLBACK_DECISION
         )
         results.append(result)
 

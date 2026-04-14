@@ -108,16 +108,18 @@ class PipelineResult:
         task   = str(self.task_spec) if self.task_spec else "N/A"
         lines  = [f"PipelineResult({status})", f"  task: {task}"]
         if self.pick:
+            pick_cost   = f"{self.pick.final_cost:.4f}"  if self.pick.final_cost  is not None else "N/A"
+            pick_ikerr  = f"{self.pick.ik_error_mm:.2f}" if self.pick.ik_error_mm is not None else "N/A"
             lines.append(
                 f"  pick : {'✅' if self.pick.success else '❌'} "
-                f"cost={self.pick.final_cost:.4f if self.pick.final_cost else 'N/A'} "
-                f"ik_err={self.pick.ik_error_mm:.2f if self.pick.ik_error_mm else 'N/A'}mm"
+                f"cost={pick_cost} ik_err={pick_ikerr}mm"
             )
         if self.place:
+            place_cost  = f"{self.place.final_cost:.4f}"  if self.place.final_cost  is not None else "N/A"
+            place_ikerr = f"{self.place.ik_error_mm:.2f}" if self.place.ik_error_mm is not None else "N/A"
             lines.append(
                 f"  place: {'✅' if self.place.success else '❌'} "
-                f"cost={self.place.final_cost:.4f if self.place.final_cost else 'N/A'} "
-                f"ik_err={self.place.ik_error_mm:.2f if self.place.ik_error_mm else 'N/A'}mm"
+                f"cost={place_cost} ik_err={place_ikerr}mm"
             )
         return "\n".join(lines)
 
