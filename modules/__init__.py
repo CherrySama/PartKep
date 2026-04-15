@@ -11,5 +11,5 @@ from .IKSolver import IKSolver
 from .taskParser import TaskSpec, TaskParser
 from .vlmDecider import VLMDecision, VLMDecider
 
-__all__ = ['GroundingDINODetector', 'ImageProcessor', 'SAM3Segmenter', 'ConstraintInstantiator', 'PoseSolver', 'IKSolver', 'TaskSpec', 'TaskParser', 'VLMDecision', 'vlmDecider']
+__all__ = ['GroundingDINODetector', 'ImageProcessor', 'SAM3Segmenter', 'ConstraintInstantiator', 'PoseSolver', 'IKSolver', 'TaskSpec', 'TaskParser', 'VLMDecision', 'VLMDecider']
 __version__ = "0.1.0"

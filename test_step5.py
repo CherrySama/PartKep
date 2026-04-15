@@ -1,5 +1,6 @@
 """
-test_step5_pipeline.py
+Created by Yinghao Ho on 2026-03-15
+
 PartKep — Step 5 完整链路计时测试
 
 测试链路：

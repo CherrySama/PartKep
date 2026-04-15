@@ -1,5 +1,5 @@
 """
-test_mujoco.py
+Created by Yinghao Ho on 2026-03-22
 PartKep — sim 模式完整链路 + MuJoCo 可视化测试
 
 流程：

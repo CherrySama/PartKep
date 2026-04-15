@@ -40,7 +40,7 @@ class MuJoCoEnv:
 
     def __init__(
         self,
-        scene_xml: str = "../mujoco_menagerie/franka_emika_panda/scene.xml",
+        scene_xml: str = "assets/franka_emika_panda/scene.xml",
         n_steps:   int   = 100,
         step_dt:   float = 0.02,
     ):
