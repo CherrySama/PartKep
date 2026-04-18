@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Franka Emika Panda — 纯运动学 URDF（供 ikpy 使用）
+
+  来源与验证：
+    - 运动学参数来自官方 franka_description（与 bullet3/panda.urdf 一致）
+    - 命名规范（无 panda_ 前缀）与 MuJoCo Menagerie panda.xml 完全对应
+    - 所有 joint origin 均经过 MJCF quat → RPY 三方手算验证
+    - 不含 mesh / inertial，仅用于 ikpy IK 求解
+
+  链结构（ikpy 视角）：
+    [0]  link0        base（固定基座）
+    [1]  joint1       revolute  range [-2.8973,  2.8973]
+    [2]  joint2       revolute  range [-1.7628,  1.7628]
+    [3]  joint3       revolute  range [-2.8973,  2.8973]
+    [4]  joint4       revolute  range [-3.0718, -0.0698]
+    [5]  joint5       revolute  range [-2.8973,  2.8973]
+    [6]  joint6       revolute  range [-0.0175,  3.7525]
+    [7]  joint7       revolute  range [-2.8973,  2.8973]
+    [8]  hand_joint   fixed     xyz="0 0 0.107" rpy="0 0 -0.7854"
+         末端 link：hand
+
+  ACTIVE_LINKS_MASK（ikpy，链长度=9）：
+    [False, True, True, True, True, True, True, True, False]
+
+  创建日期：2026-04-18
+-->
+<robot name="panda">
+
+  <!-- ======================================================= -->
+  <!--  Links                                                   -->
+  <!-- ======================================================= -->
+
+  <link name="link0"/>
+  <link name="link1"/>
+  <link name="link2"/>
+  <link name="link3"/>
+  <link name="link4"/>
+  <link name="link5"/>
+  <link name="link6"/>
+  <link name="link7"/>
+  <link name="hand"/>
+
+  <!-- ======================================================= -->
+  <!--  Joints                                                  -->
+  <!-- ======================================================= -->
+
+  <!--
+    joint1
+    MJCF：link1 pos="0 0 0.333"，无 quat（identity）
+    验证：bullet3 xyz="0 0 0.333" rpy="0 0 0" ✓
+  -->
+  <joint name="joint1" type="revolute">
+    <origin xyz="0 0 0.333" rpy="0 0 0"/>
+    <parent link="link0"/>
+    <child  link="link1"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.8973" upper="2.8973" effort="87" velocity="2.175"/>
+  </joint>
+
+  <!--
+    joint2
+    MJCF：link2 无 pos，quat="1 -1 0 0" → 绕 X 轴 -90° → rpy="-1.5708 0 0"
+    验证：bullet3 xyz="0 0 0" rpy="-1.57079632679 0 0" ✓
+  -->
+  <joint name="joint2" type="revolute">
+    <origin xyz="0 0 0" rpy="-1.5707963267948966 0 0"/>
+    <parent link="link1"/>
+    <child  link="link2"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.7628" upper="1.7628" effort="87" velocity="2.175"/>
+  </joint>
+
+  <!--
+    joint3
+    MJCF：link3 pos="0 -0.316 0"，quat="1 1 0 0" → 绕 X 轴 +90° → rpy="1.5708 0 0"
+    验证：bullet3 xyz="0 -0.316 0" rpy="1.57079632679 0 0" ✓
+  -->
+  <joint name="joint3" type="revolute">
+    <origin xyz="0 -0.316 0" rpy="1.5707963267948966 0 0"/>
+    <parent link="link2"/>
+    <child  link="link3"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.8973" upper="2.8973" effort="87" velocity="2.175"/>
+  </joint>
+
+  <!--
+    joint4
+    MJCF：link4 pos="0.0825 0 0"，quat="1 1 0 0" → 绕 X 轴 +90° → rpy="1.5708 0 0"
+    验证：bullet3 xyz="0.0825 0 0" rpy="1.57079632679 0 0" ✓
+  -->
+  <joint name="joint4" type="revolute">
+    <origin xyz="0.0825 0 0" rpy="1.5707963267948966 0 0"/>
+    <parent link="link3"/>
+    <child  link="link4"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.0718" upper="-0.0698" effort="87" velocity="2.175"/>
+  </joint>
+
+  <!--
+    joint5
+    MJCF：link5 pos="-0.0825 0.384 0"，quat="1 -1 0 0" → 绕 X 轴 -90° → rpy="-1.5708 0 0"
+    验证：bullet3 xyz="-0.0825 0.384 0" rpy="-1.57079632679 0 0" ✓
+  -->
+  <joint name="joint5" type="revolute">
+    <origin xyz="-0.0825 0.384 0" rpy="-1.5707963267948966 0 0"/>
+    <parent link="link4"/>
+    <child  link="link5"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.8973" upper="2.8973" effort="12" velocity="2.61"/>
+  </joint>
+
+  <!--
+    joint6
+    MJCF：link6 无 pos，quat="1 1 0 0" → 绕 X 轴 +90° → rpy="1.5708 0 0"
+    验证：官方 franka_description xyz="0 0 0" rpy="1.5708 0 0" ✓
+  -->
+  <joint name="joint6" type="revolute">
+    <origin xyz="0 0 0" rpy="1.5707963267948966 0 0"/>
+    <parent link="link5"/>
+    <child  link="link6"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.0175" upper="3.7525" effort="12" velocity="2.61"/>
+  </joint>
+
+  <!--
+    joint7
+    MJCF：link7 pos="0.088 0 0"，quat="1 1 0 0" → 绕 X 轴 +90° → rpy="1.5708 0 0"
+    验证：bullet3 xyz="0.088 0 0" rpy="1.57079632679 0 0" ✓
+  -->
+  <joint name="joint7" type="revolute">
+    <origin xyz="0.088 0 0" rpy="1.5707963267948966 0 0"/>
+    <parent link="link6"/>
+    <child  link="link7"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.8973" upper="2.8973" effort="12" velocity="2.61"/>
+  </joint>
+
+  <!--
+    hand_joint（fixed）
+    MJCF：hand pos="0 0 0.107"，quat="0.9238795 0 0 -0.3826834"
+         w=0.9239, z=-0.3827 → 绕 Z 轴 -45° → rpy="0 0 -0.7854"
+    验证：官方 franka_description xyz="0 0 0.107" rpy="0 0 -0.7854" ✓
+  -->
+  <joint name="hand_joint" type="fixed">
+    <origin xyz="0 0 0.107" rpy="0 0 -0.7853981633974483"/>
+    <parent link="link7"/>
+    <child  link="hand"/>
+  </joint>
+
+</robot>

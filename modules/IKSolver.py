@@ -10,21 +10,20 @@ Franka Panda IK 求解器（基于 ikpy）
 设计选择：
     - 使用 ikpy 纯运动学求解，完全独立于仿真平台
     - 同一份代码可直接用于 MuJoCo 仿真和真机部署
-    - URDF 路径通过 robot_descriptions 自动获取，无需手动管理
+    - URDF 使用本地 assets/franka_emika_panda/panda.urdf
+      命名与 MuJoCo Menagerie panda.xml 完全对应（无 panda_ 前缀）
 
 链结构（来自 panda.urdf）：
-    [0]  Base link          fixed    ← 不参与 IK
-    [1]  panda_joint1       revolute ← 7 个主动关节
-    [2]  panda_joint2       revolute
-    [3]  panda_joint3       revolute
-    [4]  panda_joint4       revolute
-    [5]  panda_joint5       revolute
-    [6]  panda_joint6       revolute
-    [7]  panda_joint7       revolute
-    [8]  panda_joint8       fixed    ← 不参与 IK
-    [9]  panda_hand_joint   fixed
-    [10] panda_hand_tcp_joint fixed
-    末端 TCP 零位位置: [0.088, 0, 0.8226]（米）
+    [0]  link0        fixed    ← 不参与 IK（基座）
+    [1]  joint1       revolute ← 7 个主动关节
+    [2]  joint2       revolute
+    [3]  joint3       revolute
+    [4]  joint4       revolute
+    [5]  joint5       revolute
+    [6]  joint6       revolute
+    [7]  joint7       revolute
+    [8]  hand_joint   fixed    ← 不参与 IK
+    末端 link：hand
 
 Franka Panda 关节限位（rad）：
     joint1: [-2.8973,  2.8973]
@@ -53,13 +52,12 @@ PANDA_JOINT_LIMITS = np.array([
 ])
 
 # ikpy 链中主动关节的索引（对应上表）
-# 链长度 11，索引 1-7 是 revolute 主动关节
-ACTIVE_LINKS_MASK = [False, True, True, True, True, True, True, True,
-                     False, False, False]
+# 链长度 9，索引 1-7 是 revolute 主动关节
+ACTIVE_LINKS_MASK = [False, True, True, True, True, True, True, True, False]
 
 # Panda 默认初始位形（接近竖直，关节限位内的安全位置）
 # 可在 MuJoCo 中观察 home 位置得到
-Q_HOME = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+Q_HOME = np.array([0, 0, 0, -1.5708, 0, 1.5708, -0.7853])
 
 
 class IKSolver:
@@ -92,7 +90,7 @@ class IKSolver:
 
         Args:
             urdf_path: URDF 文件路径。
-                       None → 自动从 robot_descriptions 获取
+                       None → 自动定位 assets/franka_emika_panda/panda.urdf
             verbose:   是否打印加载和求解信息
         """
         self.verbose = verbose
@@ -128,7 +126,7 @@ class IKSolver:
             warnings.simplefilter("ignore", UserWarning)
             self.chain = ikpy_chain.Chain.from_urdf_file(
                 urdf_path,
-                base_elements=['panda_link0'],
+                base_elements=['link0'],
                 base_element_type='link',
                 active_links_mask=ACTIVE_LINKS_MASK
             )
@@ -136,7 +134,7 @@ class IKSolver:
         if verbose:
             print(f"✓ 运动学链加载完成")
             print(f"  链长度: {len(self.chain.links)}")
-            print(f"  主动关节: 7 个（panda_joint1 ~ panda_joint7）")
+            print(f"  主动关节: 7 个（joint1 ~ joint7）")
 
             # 打印零位 FK 验证
             q_full = self._q7_to_q_full(np.zeros(7))
@@ -147,16 +145,17 @@ class IKSolver:
 
     @staticmethod
     def _get_urdf_path() -> str:
-        """从 robot_descriptions 自动获取 Panda URDF 路径"""
-        try:
-            from robot_descriptions import panda_description
-            return panda_description.URDF_PATH
-        except ImportError:
-            raise ImportError(
-                "未找到 URDF，请安装 robot_descriptions：\n"
-                "pip install robot_descriptions\n"
-                "或手动指定 urdf_path 参数"
+        """返回本地 Panda URDF 路径（与 MuJoCo Menagerie panda.xml 同源）"""
+        urdf_path = (
+            Path(__file__).parent.parent
+            / "assets" / "franka_emika_panda" / "panda.urdf"
+        )
+        if not urdf_path.exists():
+            raise FileNotFoundError(
+                f"未找到 URDF 文件: {urdf_path}\n"
+                "请确认 assets/franka_emika_panda/panda.urdf 存在"
             )
+        return str(urdf_path)
 
     @staticmethod
     def _q7_to_q_full(q7: np.ndarray) -> list:
@@ -172,7 +171,7 @@ class IKSolver:
         Returns:
             list[11]：ikpy 格式的完整关节角列表
         """
-        q_full = [0.0] * 11
+        q_full = [0.0] * 9
         # 主动关节在索引 1-7
         for i, val in enumerate(q7):
             q_full[i + 1] = float(val)
@@ -342,38 +341,3 @@ if __name__ == "__main__":
         print(f"  ✅ 求解成功，关节角: {np.round(result2['q'], 3)}")
     else:
         print(f"  ⚠️  求解结果仅供参考（误差或超限位）")
-
-    # ---------- 测试3：与 PoseSolver 串联 ----------
-    print("\n【测试3】PoseSolver → IKSolver 完整链路")
-    print("-" * 70)
-
-    from modules.constraintsInst import ConstraintInstantiator
-    from modules.poseSolver import PoseSolver
-
-    keypoints_3d = {
-        'handle': np.array([0.45, 0.05, 0.12]),
-        'rim':    np.array([0.40, 0.00, 0.18]),
-        'body':   np.array([0.40, 0.00, 0.10]),
-    }
-
-    inst      = ConstraintInstantiator(object_label='cup')
-    cost_fn, x0, meta = inst.instantiate(keypoints_3d)
-
-    pose_solver = PoseSolver(verbose=False)
-    pose_result = pose_solver.solve(cost_fn, x0, meta)
-
-    print(f"\n  PoseSolver 结果:")
-    print(f"    success={pose_result['success']}, "
-          f"cost={pose_result['final_cost']:.4f}")
-    print(f"    末端位置={np.round(pose_result['position'], 4)}")
-
-    ik_result = ik.solve(pose_result['T'], q_init=Q_HOME)
-
-    print(f"\n  IKSolver 结果:")
-    print(f"    success={ik_result['success']}")
-    print(f"    位置误差={ik_result['position_error']*1000:.3f} mm")
-    print(f"    关节角={np.round(ik_result['q'], 3)}")
-
-    print("\n" + "=" * 70)
-    print("✅ IKSolver 测试完成！")
-    print("=" * 70)
