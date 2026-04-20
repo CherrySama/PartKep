@@ -255,15 +255,17 @@ def main():
     print("  提示：观察每个姿态下夹爪的位置和朝向是否合理")
 
     from simulation.mujoco_env import MuJoCoEnv
+    from modules.motionPlanner import MotionPlanner
+
     env = MuJoCoEnv(scene_xml=SCENE_XML)
 
-    # 用 get_site_xpos 验证静止时 site 坐标与我们手写的是否一致
+    # 验证 site 坐标
     print("\n  ── 从仿真读取 site 世界坐标（验证用）──")
     for site_name, expected in [
-        ("kp_handle",      CUP_KEYPOINTS["handle"]),
-        ("kp_body",        CUP_KEYPOINTS["body"]),
-        ("kp_rim",         CUP_KEYPOINTS["rim"]),
-        ("kp_tray_surface",TRAY_KEYPOINTS["surface"]),
+        ("kp_handle",       CUP_KEYPOINTS["handle"]),
+        ("kp_body",         CUP_KEYPOINTS["body"]),
+        ("kp_rim",          CUP_KEYPOINTS["rim"]),
+        ("kp_tray_surface", TRAY_KEYPOINTS["surface"]),
     ]:
         actual = env.get_site_xpos(site_name)
         err    = np.linalg.norm(actual - expected)
@@ -271,20 +273,16 @@ def main():
         print(f"  {status} {site_name:18s}: 仿真={np.round(actual,4)}  "
               f"手写={np.round(expected,4)}  diff={err*1000:.1f}mm")
 
-    T_fk_pick = ik.forward_kinematics(q_pick)
-    print(f"  T_pick  旋转 Z 列: {np.round(T_pick[:3, 2], 3)}")   # 期望水平
-    print(f"  FK(q)   旋转 Z 列: {np.round(T_fk_pick[:3, 2], 3)}")  # 实际方向
+    # MotionPlanner 规划完整轨迹
+    print("\n  ── MotionPlanner 规划轨迹 ──")
+    planner   = MotionPlanner(env.model, verbose=True)
+    waypoints = planner.plan_pick_place(T_pick, T_place)
 
-    input("\n  按 Enter 开始运动...")
+    input(f"\n  共 {len(waypoints)} 个 waypoints，按 Enter 开始执行...")
 
-    env.move_to(q_pick,  label="pick  (cup 抓取位姿)")
-    input("  观察夹爪位置和朝向，按 Enter 继续...")
+    env.execute_trajectory(waypoints)
 
-    env.move_to(q_place, label="place (tray 放置位姿)")
-    input("  观察夹爪位置和朝向，按 Enter 回到 home...")
-
-    env.reset()
-    input("  按 Enter 关闭...")
+    input("  观察运动是否合理，按 Enter 关闭...")
     env.close()
 
     print("\n✅ 测试完成")

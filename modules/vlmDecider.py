@@ -10,7 +10,7 @@ VLM 约束决策模块
 VLM 决策的内容（对应论文 3.4 节）：
     - w_grasp_axis : 夹爪 Y 轴对齐 SAP grasp_axis 的权重（C3，pick 专用）
     - w_safety     : 安全距离惩罚的权重（C4，pick + place）
-    - w_upright    : 保持末端竖直的权重（C5，pick + place）
+    - w_flip       : Wrist Flip 惩罚的权重（C5，pick + place）
 
 VLM 不控制的约束（固定激活，属于 SAP 几何职责）：
     - C1 approach_pos : 末端位置对齐接触点（始终激活）
@@ -53,14 +53,15 @@ class VLMDecision:
     Attributes:
         w_grasp_axis : C3 权重，夹爪 Y 轴对齐 grasp_axis（pick 专用，≥ 0）
         w_safety     : C4 权重，安全距离惩罚（pick + place，≥ 0）
-        w_upright    : C5 权重，末端保持竖直（pick + place，≥ 0）
+        w_flip       : C5 权重，Wrist Flip 惩罚（pick + place，≥ 0）
+                       惩罚末端方向与 approach_dir 反向，防止夹爪倒置
         confidence   : VLM 决策置信度 [0, 1]，低于阈值时触发 fallback
         reasoning    : VLM 推理说明（调试用，不参与计算）
         is_fallback  : True 表示本次决策来自 rule-based fallback
     """
     w_grasp_axis: float
     w_safety:     float
-    w_upright:    float
+    w_flip:       float
     confidence:   float
     reasoning:    str
     is_fallback:  bool
@@ -70,7 +71,7 @@ class VLMDecision:
         for name, val in [
             ('w_grasp_axis', self.w_grasp_axis),
             ('w_safety',     self.w_safety),
-            ('w_upright',    self.w_upright),
+            ('w_flip',       self.w_flip),
         ]:
             if val < 0:
                 raise ValueError(f"VLMDecision.{name} 必须 ≥ 0，当前: {val}")
@@ -85,19 +86,19 @@ class VLMDecision:
             f"VLMDecision(src={src}, "
             f"w_grasp={self.w_grasp_axis:.2f}, "
             f"w_safety={self.w_safety:.2f}, "
-            f"w_upright={self.w_upright:.2f}, "
+            f"w_flip={self.w_flip:.2f}, "
             f"conf={self.confidence:.2f})"
         )
 
 
 # ==================== Fallback 默认权重 ====================
 # rule-based fallback：当 VLM 不可用或返回无效结果时使用
-# 设计原则：保守策略，safety 权重最高，upright 默认激活
+# 设计原则：保守策略，safety 权重最高，w_flip 默认激活防止 wrist flip
 
 FALLBACK_DECISION = VLMDecision(
     w_grasp_axis = 1.0,
     w_safety     = 2.0,
-    w_upright    = 1.0,
+    w_flip       = 1.0,
     confidence   = 0.0,
     reasoning    = "Rule-based fallback: VLM unavailable or returned invalid response.",
     is_fallback  = True,
@@ -216,11 +217,12 @@ def _build_vlm_prompt(
       Higher value enforces stricter avoidance of fragile or sensitive regions.
       Set higher when the object contains liquid or has a delicate opening.
 
-  - w_upright (float, 0.0~3.0):
-      Weight for keeping the end-effector upright during pick.
-      Higher value enforces more vertical gripper orientation.
-      Set higher when the object must not be tilted (e.g. cup with liquid).
-      Set to 0.0 when tilting is acceptable or required by the task.
+  - w_flip (float, 0.0~3.0):
+      Weight for wrist flip penalty during pick.
+      Penalises end-effector orientation that is opposite to the SAP approach direction.
+      Higher value more strongly prevents the gripper from flipping upside-down.
+      Set higher when gripper inversion would cause task failure.
+      Set lower only when an inverted approach is geometrically required.
 """
 
     # place 模式的约束说明（无 w_grasp_axis）
@@ -231,10 +233,11 @@ def _build_vlm_prompt(
       Weight for safety distance penalty from avoid-mode parts (e.g. tray rim).
       Higher value enforces stricter avoidance of placement platform edges.
 
-  - w_upright (float, 0.0~3.0):
-      Weight for keeping the end-effector upright during placement.
-      Higher value enforces stable, level placement of the object.
-      This should generally be high to ensure objects are placed stably.
+  - w_flip (float, 0.0~3.0):
+      Weight for wrist flip penalty during placement.
+      Penalises end-effector orientation that is opposite to the SAP approach direction.
+      Higher value more strongly prevents the gripper from flipping upside-down.
+      This should generally be high to ensure stable placement orientation.
 """
 
     constraints_block = pick_constraints if mode == "pick" else place_constraints
@@ -258,7 +261,7 @@ Respond with a single JSON object only. No explanation outside the JSON.
 {{
   "w_grasp_axis": <float>,
   "w_safety": <float>,
-  "w_upright": <float>,
+  "w_flip": <float>,
   "confidence": <float between 0.0 and 1.0>,
   "reasoning": "<one sentence explaining your decision>"
 }}
@@ -467,7 +470,7 @@ class VLMDecider:
         try:
             w_grasp = float(data.get("w_grasp_axis", 1.0))
             w_safe  = float(data.get("w_safety",     2.0))
-            w_up    = float(data.get("w_upright",     1.0))
+            w_flip  = float(data.get("w_flip",        1.0))
             conf    = float(data.get("confidence",    0.5))
             reason  = str(data.get("reasoning",       ""))
         except (TypeError, ValueError) as e:
@@ -480,13 +483,13 @@ class VLMDecider:
         # 权重截断到合理范围 [0, 3]
         w_grasp = float(np.clip(w_grasp, 0.0, 3.0))
         w_safe  = float(np.clip(w_safe,  0.0, 3.0))
-        w_up    = float(np.clip(w_up,    0.0, 3.0))
+        w_flip  = float(np.clip(w_flip,  0.0, 3.0))
         conf    = float(np.clip(conf,    0.0, 1.0))
 
         return VLMDecision(
             w_grasp_axis = w_grasp,
             w_safety     = w_safe,
-            w_upright    = w_up,
+            w_flip       = w_flip,
             confidence   = conf,
             reasoning    = reason,
             is_fallback  = False,
@@ -501,22 +504,22 @@ class VLMDecider:
         Pick 模式：
             w_grasp_axis = 1.0（标准夹爪对齐）
             w_safety     = 2.0（安全优先）
-            w_upright    = 1.0（默认保持竖直）
+            w_flip       = 1.0（默认激活 wrist flip 惩罚）
 
         Place 模式：
             w_grasp_axis = 0.0（place 不需要）
             w_safety     = 2.0（避开托盘边缘）
-            w_upright    = 1.5（放置时更强的竖直约束）
+            w_flip       = 1.5（放置时更强的 wrist flip 惩罚，确保姿态稳定）
         """
         if mode == "place":
             return VLMDecision(
                 w_grasp_axis = 0.0,
                 w_safety     = 2.0,
-                w_upright    = 1.5,
+                w_flip       = 1.5,
                 confidence   = 0.0,
                 reasoning    = (
                     "Rule-based fallback (place mode): "
-                    "no grasp axis needed, upright enforced for stable placement."
+                    "no grasp axis needed, wrist flip penalty enforced for stable placement."
                 ),
                 is_fallback  = True,
             )
@@ -524,7 +527,7 @@ class VLMDecider:
             return VLMDecision(
                 w_grasp_axis = 1.0,
                 w_safety     = 2.0,
-                w_upright    = 1.0,
+                w_flip       = 1.0,
                 confidence   = 0.0,
                 reasoning    = (
                     "Rule-based fallback (pick mode): "
@@ -563,7 +566,7 @@ if __name__ == "__main__":
     # 【1】VLMDecision dataclass 校验
     print("\n【1】VLMDecision 构造与校验")
     d = VLMDecision(
-        w_grasp_axis=1.0, w_safety=2.0, w_upright=1.0,
+        w_grasp_axis=1.0, w_safety=2.0, w_flip=1.0,
         confidence=0.85, reasoning="test", is_fallback=False
     )
     assert d.w_grasp_axis == 1.0
@@ -573,7 +576,7 @@ if __name__ == "__main__":
     # 【2】非法权重应报错
     print("\n【2】非法权重 → 应抛出 ValueError")
     try:
-        VLMDecision(w_grasp_axis=-0.1, w_safety=1.0, w_upright=1.0,
+        VLMDecision(w_grasp_axis=-0.1, w_safety=1.0, w_flip=1.0,
                     confidence=0.5, reasoning="", is_fallback=False)
         print("  ❌ 未报错！")
     except ValueError:
@@ -607,7 +610,7 @@ if __name__ == "__main__":
     )
     assert decision_place.is_fallback
     assert decision_place.w_grasp_axis == 0.0   # place 模式无 grasp axis
-    assert decision_place.w_upright >= decision.w_upright  # place 竖直约束更强
+    assert decision_place.w_flip >= decision.w_flip  # place wrist flip 约束更强
     print(f"  ✅ {decision_place}")
 
     # 【6】标注图生成
@@ -620,8 +623,8 @@ if __name__ == "__main__":
     print("\n【7】JSON 解析测试")
     dummy_decider = VLMDecider(vlm_endpoint="http://dummy", verbose=False)
     raw_valid = json.dumps({
-        "w_grasp_axis": 1.5, "w_safety": 2.5, "w_upright": 0.5,
-        "confidence": 0.9, "reasoning": "handle detected, upright not critical"
+        "w_grasp_axis": 1.5, "w_safety": 2.5, "w_flip": 0.5,
+        "confidence": 0.9, "reasoning": "handle detected, wrist flip penalty low"
     })
     parsed = dummy_decider._parse_vlm_response(raw_valid, mode="pick")
     assert parsed.w_grasp_axis == 1.5

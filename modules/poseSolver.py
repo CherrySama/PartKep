@@ -8,7 +8,7 @@ SLSQP 求解器封装模块
 
 设计选择：
     - 软约束已全部编码进 cost_fn，求解器无需额外约束/边界
-    - x0 来自 ConstraintInstantiator（已通过叉积法初始化 + 快速筛选精化），
+    - x0 来自 ConstraintInstantiator（由 q_current → FK 初始化），
       PoseSolver 直接使用，不再覆盖
     - 求解失败时不抛异常，在结果中标记 success=False，由调用方决定处理策略
 """
@@ -65,7 +65,7 @@ class PoseSolver:
                       直接来自 ConstraintInstantiator.instantiate()
             x0      : shape=(6,) 优化初始猜测
                       直接来自 ConstraintInstantiator.instantiate()
-                      已由叉积法初始化 + 快速筛选精化，不会被覆盖
+                      由 q_current → FK 初始化，不会被覆盖
             meta    : 调试信息字典，必须包含 'cost_breakdown_fn' 键
                       直接来自 ConstraintInstantiator.instantiate()
 
@@ -140,7 +140,7 @@ class PoseSolver:
             print(f"    C2 approach_rot : {bd.get('approach_rot', 0.0):.6f}")
             print(f"    C3 grasp_axis   : {bd.get('grasp_axis',   0.0):.6f}")
             print(f"    C4 safety       : {bd.get('safety',       0.0):.6f}")
-            print(f"    C5 upright      : {bd.get('upright',      0.0):.6f}")
+            print(f"    C5 flip         : {bd.get('flip',         0.0):.6f}")
             if bd.get('safety_per_part'):
                 for part, val in bd['safety_per_part'].items():
                     print(f"      └─ {part}: {val:.6f}")
@@ -256,7 +256,7 @@ if __name__ == "__main__":
     # ── 【4】代价分解字段验证 ──
     print("\n【4】代价分解字段验证（五约束）")
     bd = result['cost_breakdown']
-    for field in ['approach_pos', 'approach_rot', 'grasp_axis', 'safety', 'upright']:
+    for field in ['approach_pos', 'approach_rot', 'grasp_axis', 'safety', 'flip']:
         assert field in bd, f"cost_breakdown 缺少字段: {field}"
         print(f"  {field:15s}: {bd[field]:.6f} ✅")
 
@@ -277,7 +277,7 @@ if __name__ == "__main__":
     print("\n【7】place 模式（tray surface）")
     from modules.vlmDecider import VLMDecision
     place_decision = VLMDecision(
-        w_grasp_axis=0.0, w_safety=2.0, w_upright=1.5,
+        w_grasp_axis=0.0, w_safety=2.0, w_flip=1.5,
         confidence=0.0, reasoning="fallback", is_fallback=True
     )
     inst_t = ConstraintInstantiator(verbose=False)

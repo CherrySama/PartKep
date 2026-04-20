@@ -9,29 +9,30 @@ Created by Yinghao Ho on 2026-2-23
     ┌────────┬──────────────────────────────┬──────────┬──────────────┐
     │ 编号   │ 含义                         │ 控制方   │ 适用模式     │
     ├────────┼──────────────────────────────┼──────────┼──────────────┤
-    │ C1     │ 末端位置对齐目标接触点       │ 固定     │ pick + place │
+    │ C1     │ 指尖位置对齐目标关键点       │ 固定     │ pick + place │
     │ C2     │ 夹爪 Z 轴对齐接近方向        │ 固定     │ pick + place │
     │ C3     │ 夹爪 Y 轴对齐 SAP grasp_axis │ VLM      │ pick 专用    │
-    │ C4     │ 安全距离惩罚                 │ VLM      │ pick + place │
-    │ C5     │ 末端保持竖直（anti-tilt）    │ VLM      │ pick + place │
+    │ C4     │ 安全距离惩罚（指尖距离）     │ VLM      │ pick + place │
+    │ C5     │ Wrist Flip 惩罚              │ VLM      │ pick + place │
     └────────┴──────────────────────────────┴──────────┴──────────────┘
 
     C1/C2 属于 SAP 几何职责，始终激活，权重固定。
     C3/C4/C5 属于语义约束，权重由 VLMDecision 提供。
 
 归一化说明：
-    - C1：||pos - contact_point||²（米²，固定权重保证量纲一致）
-    - C2：1 - dot(gripper_Z, approach_dir)²         → [0, 1]
-    - C3：1 - dot(gripper_Y, grasp_axis)²           → [0, 1]
-    - C4：Σ max(0, 1 - dist/margin)²                → [0, N_avoid]
-    - C5：1 - gripper_Z_world[2]²                   → [0, 1]
-          （惩罚夹爪 Z 轴偏离竖直方向，0 = 完全竖直）
+    - C1：(||fingertip - keypoint|| / FINGER_LENGTH)²    → [0, ∞)
+          fingertip = pos + (R@[0,0,1]) * FINGER_LENGTH
+    - C2：1 - dot(gripper_Z, approach_dir)²              → [0, 1]
+    - C3：1 - dot(gripper_Y, grasp_axis)²                → [0, 1]
+    - C4：Σ max(0, 1 - ||fingertip-p_avoid||/margin)²   → [0, N_avoid]
+    - C5：((1 - dot(gripper_Z, approach_dir)) / 2)²      → [0, 1]
+          d=+1（正向对齐）→ 0，d=-1（wrist flip）→ 1
 
 最优交互点选择机制：
-    Pick 模式对每个 grasp 候选关键点分别构建 cost_fn 并运行快速 SLSQP（50次），
-    选取最终代价最低的候选作为最优交互点，返回其 cost_fn 和精化后的 x0 供
+    Pick 模式对每个 grasp 候选关键点分别构建 cost_fn 并运行完整 SLSQP（200次），
+    选取最终代价最低的候选作为最优交互点，返回其 cost_fn 和对应 x0 供
     PoseSolver 做最终精细优化（200次）。最优交互点由优化过程自然涌现，
-    不由任何硬编码优先级决定。
+    不由任何硬编码优先级决定。VLM 权重影响各候选的代价，间接决定涌现结果。
 
 优化变量 x（6D）：
     [px, py, pz, ax, ay, az]
@@ -58,12 +59,12 @@ from utils import CoordinateTransformer
 W_APPROACH_POS = 1.0    # C1 位置对齐（固定）
 W_APPROACH_ROT = 1.0    # C2 接近方向旋转对齐（固定）
 
-# ==================== 几何参数 ====================
-APPROACH_OFFSET    = 0.05   # 末端与接触点的偏移距离（米）
-INIT_HEIGHT_OFFSET = 0.15   # 初始猜测额外高度偏移（米，仅 fallback 用）
-
-# 快速候选筛选的 SLSQP 迭代次数（在 instantiate 内部使用）
-CANDIDATE_MAX_ITER = 50
+# ==================== 几何参数（来自 panda.xml 实测）====================
+# hand link 原点 → 指尖 pad 中心（沿 hand Z 轴）
+# 来源：finger pos=0.0584 + pad_1 center=0.0445 = 0.1029m ≈ 0.103m
+FINGER_LENGTH  = 0.103
+# 实际停靠距离：留 8mm 裕量，避免指尖硬接触关键点表面
+CONTACT_OFFSET = 0.095
 
 
 # ==================== 辅助函数 ====================
@@ -161,7 +162,7 @@ def _rodrigues_inverse(R: np.ndarray) -> np.ndarray:
 
 
 def _build_cost_fn(
-        contact_point:  np.ndarray,
+        keypoint_3d:    np.ndarray,
         approach_dir:   np.ndarray,
         grasp_axis:     Optional[np.ndarray],
         avoid_kps:      Dict[str, Tuple[np.ndarray, float]],
@@ -172,7 +173,7 @@ def _build_cost_fn(
     构建单个候选关键点的代价函数
 
     Args:
-        contact_point  : 末端目标停靠点（关键点 - approach_dir * offset）
+        keypoint_3d    : 目标关键点世界坐标（物体表面点）
         approach_dir   : 归一化接近方向（运行时修正后）
         grasp_axis     : 归一化夹爪张开轴（pick 专用，place 传 None）
         avoid_kps      : {part_name → (point_3d, margin)} 需回避的部件
@@ -183,11 +184,12 @@ def _build_cost_fn(
         (cost_fn, cost_breakdown_fn) 元组
     """
     # ── 固定参数（闭包捕获） ──
-    _cp    = contact_point.copy()
+    _kp    = keypoint_3d.copy()         # 目标关键点（物体表面）
     _app   = approach_dir.copy()
     _gavt  = grasp_axis.copy() if grasp_axis is not None else None
     _avd   = {k: (v[0].copy(), v[1]) for k, v in avoid_kps.items()}
     _mode  = mode
+    _L     = FINGER_LENGTH              # hand link → 指尖距离（物理常量）
 
     # ── 固定权重 ──
     _wc1 = W_APPROACH_POS
@@ -196,7 +198,7 @@ def _build_cost_fn(
     # ── VLM 权重（pick 下 C3 有效，place 下强制 0） ──
     _wc3 = vlm_decision.w_grasp_axis if _mode == "pick" else 0.0
     _wc4 = vlm_decision.w_safety
-    _wc5 = vlm_decision.w_upright
+    _wc5 = vlm_decision.w_flip
 
     def cost_fn(x: np.ndarray) -> float:
         pos  = x[:3]
@@ -206,8 +208,12 @@ def _build_cost_fn(
         gripper_z = R @ np.array([0.0, 0.0, 1.0])   # 夹爪接近轴（世界系）
         gripper_y = R @ np.array([0.0, 1.0, 0.0])   # 夹爪张开轴（世界系）
 
-        # C1：位置对齐代价（米²）
-        c1 = float(np.dot(pos - _cp, pos - _cp))
+        # 指尖世界坐标（C1/C4 的核心几何量）
+        fingertip = pos + gripper_z * _L
+
+        # C1：指尖位置对齐代价，归一化到 [0,∞)
+        c1_dist = float(np.linalg.norm(fingertip - _kp))
+        c1 = (c1_dist / _L) ** 2
 
         # C2：接近方向旋转代价（固定，[0,1]）
         c2 = 1.0 - float(np.dot(gripper_z, _app)) ** 2
@@ -217,15 +223,17 @@ def _build_cost_fn(
         if _gavt is not None:
             c3 = 1.0 - float(np.dot(gripper_y, _gavt)) ** 2
 
-        # C4：安全距离惩罚（归一化，每项 [0,1]）
+        # C4：安全距离惩罚（指尖到 avoid 部件，每项 [0,1]）
         c4 = 0.0
         for p_avoid, margin in _avd.values():
-            dist = float(np.linalg.norm(pos - p_avoid))
+            dist = float(np.linalg.norm(fingertip - p_avoid))
             v    = max(0.0, 1.0 - dist / margin)
             c4  += v * v
 
-        # C5：upright 约束，惩罚夹爪 Z 轴偏离竖直（[0,1]）
-        c5 = 1.0 - gripper_z[2] ** 2
+        # C5：Wrist Flip 惩罚，处处连续可微，[0,1]
+        # d=+1（正向对齐）→ 0，d=0（垂直）→ 0.25，d=-1（翻转）→ 1
+        d  = float(np.dot(gripper_z, _app))
+        c5 = ((1.0 - d) / 2.0) ** 2
 
         return float(
             _wc1 * c1 +
@@ -243,22 +251,29 @@ def _build_cost_fn(
         gripper_z = R @ np.array([0.0, 0.0, 1.0])
         gripper_y = R @ np.array([0.0, 1.0, 0.0])
 
-        c1 = float(np.dot(pos - _cp, pos - _cp))
+        fingertip = pos + gripper_z * _L
+
+        c1_dist = float(np.linalg.norm(fingertip - _kp))
+        c1 = (c1_dist / _L) ** 2
+
         c2 = 1.0 - float(np.dot(gripper_z, _app)) ** 2
+
         c3 = 0.0
         if _gavt is not None:
             c3 = 1.0 - float(np.dot(gripper_y, _gavt)) ** 2
 
-        c4             = 0.0
+        c4              = 0.0
         safety_per_part = {}
         for pname, (p_avoid, margin) in _avd.items():
-            dist = float(np.linalg.norm(pos - p_avoid))
+            dist = float(np.linalg.norm(fingertip - p_avoid))
             v    = max(0.0, 1.0 - dist / margin)
             val  = v * v
             safety_per_part[pname] = val
             c4 += val
 
-        c5    = 1.0 - gripper_z[2] ** 2
+        d  = float(np.dot(gripper_z, _app))
+        c5 = ((1.0 - d) / 2.0) ** 2
+
         total = _wc1*c1 + _wc2*c2 + _wc3*c3 + _wc4*c4 + _wc5*c5
 
         return {
@@ -267,9 +282,9 @@ def _build_cost_fn(
             'approach_rot':     float(_wc2 * c2),
             'grasp_axis':       float(_wc3 * c3),
             'safety':           float(_wc4 * c4),
-            'upright':          float(_wc5 * c5),
+            'flip':             float(_wc5 * c5),
             'safety_per_part':  safety_per_part,
-            # 向后兼容 PoseSolver 读取的字段名
+            # 向后兼容字段
             'approach':         float(_wc1 * c1),
             'grasp':            float(_wc3 * c3),
         }
@@ -277,56 +292,43 @@ def _build_cost_fn(
     return cost_fn, cost_breakdown_fn
 
 
-def _quick_slsqp(cost_fn: Callable, x0: np.ndarray) -> Tuple[np.ndarray, float]:
-    """
-    快速 SLSQP（50次迭代），用于候选关键点筛选
-
-    Returns:
-        (x_opt, final_cost)
-    """
-    result = minimize(
-        fun=cost_fn,
-        x0=x0,
-        method='SLSQP',
-        options={'maxiter': CANDIDATE_MAX_ITER, 'ftol': 1e-4, 'disp': False}
-    )
-    return result.x, float(result.fun)
 
 
 # ==================== 主类 ====================
 
 class ConstraintInstantiator:
     """
-    代价函数实例化器（重构版）
+    代价函数实例化器
 
     根据输入关键点的 SAP contact_mode 自动选择 pick 或 place 模式，
     接收 VLMDecision 提供的语义约束权重，构建完整代价函数。
 
     Pick 模式：
-        对所有 grasp 候选关键点分别构建代价函数并运行快速 SLSQP，
+        对所有 grasp 候选关键点分别构建代价函数并运行完整 SLSQP（200次），
         选取最终代价最低的候选（最优交互点自然涌现），
-        返回其 cost_fn 和精化后的 x0 供 PoseSolver 精细优化。
+        返回其 cost_fn 和对应 x0 供 PoseSolver 精细优化。
 
     Place 模式：
         单一 surface 目标，构建含 C1/C2/C4/C5 的代价函数。
 
     使用示例（pick）：
         >>> from modules.vlmDecider import VLMDecider
-        >>> decision = vlm_decider.decide(image, kps_2d, instruction, "pick")
+        >>> from modules.IKSolver import IKSolver
         >>>
+        >>> ik = IKSolver(verbose=False)
+        >>> T_current = ik.forward_kinematics(env.get_current_q())
+        >>>
+        >>> decision = vlm_decider.decide(image, kps_2d, instruction, "pick")
         >>> inst = ConstraintInstantiator()
-        >>> cost_fn, x0, meta = inst.instantiate(keypoints_3d, decision)
+        >>> cost_fn, x0, meta = inst.instantiate(keypoints_3d, decision, T_current)
 
     使用示例（place）：
         >>> decision_place = vlm_decider.decide(image, kps_2d, instruction, "place")
-        >>> cost_fn, x0, meta = inst.instantiate(tray_keypoints_3d, decision_place)
+        >>> cost_fn, x0, meta = inst.instantiate(tray_keypoints_3d, decision_place, T_current)
     """
 
-    def __init__(self,
-                 approach_offset: float = APPROACH_OFFSET,
-                 verbose:         bool  = True):
-        self.approach_offset = approach_offset
-        self.verbose         = verbose
+    def __init__(self, verbose: bool = True):
+        self.verbose = verbose
 
     # ==================== 公开接口 ====================
 
@@ -334,6 +336,7 @@ class ConstraintInstantiator:
             self,
             keypoints_3d: Dict[str, np.ndarray],
             vlm_decision: VLMDecision,
+            T_current:    np.ndarray,
     ) -> Tuple[Callable, np.ndarray, Dict]:
         """
         实例化代价函数（自动选择 pick / place 模式）
@@ -341,10 +344,12 @@ class ConstraintInstantiator:
         Args:
             keypoints_3d : {part_name → 3D 世界坐标 shape=(3,)}
             vlm_decision : VLMDecision，来自 VLMDecider.decide()
+            T_current    : shape=(4,4) 当前末端齐次变换矩阵（来自 IKSolver.forward_kinematics(q_current)）
+                           用于初始化 x0，使优化从机械臂实际状态出发
 
         Returns:
             cost_fn : Callable，SLSQP 目标函数
-            x0      : shape=(6,)，优化初始猜测（叉积法初始化）
+            x0      : shape=(6,)，优化初始猜测（来自 T_current）
             meta    : Dict，调试信息
 
         Raises:
@@ -381,9 +386,9 @@ class ConstraintInstantiator:
             )
 
         if grasp_kps:
-            return self._instantiate_pick(grasp_kps, avoid_kps, vlm_decision)
+            return self._instantiate_pick(grasp_kps, avoid_kps, vlm_decision, T_current)
         else:
-            return self._instantiate_place(place_kps, avoid_kps, vlm_decision)
+            return self._instantiate_place(place_kps, avoid_kps, vlm_decision, T_current)
 
     # ==================== 私有：pick 路径 ====================
 
@@ -392,14 +397,26 @@ class ConstraintInstantiator:
             grasp_kps:    Dict[str, np.ndarray],
             avoid_kps:    Dict[str, Tuple[np.ndarray, float]],
             vlm_decision: VLMDecision,
+            T_current:    np.ndarray,
     ) -> Tuple[Callable, np.ndarray, Dict]:
         """
         Pick 模式：对所有 grasp 候选关键点各自构建代价函数，
-        运行快速 SLSQP 筛选最优交互点，返回其代价函数和精化后的 x0。
+        运行完整 SLSQP（200次）筛选最优交互点，返回其代价函数和 x0。
         """
         # 物体中心（所有关键点均值，用于运行时修正接近方向）
         all_pts       = list(grasp_kps.values()) + [v[0] for v in avoid_kps.values()]
         object_center = np.mean(np.stack(all_pts), axis=0)
+
+        # 从 T_current 提取当前末端状态
+        R_current     = T_current[:3, :3]
+        gripper_z_cur = R_current @ np.array([0., 0., 1.])
+
+        # x0 旋转：当前末端姿态的轴角表示
+        try:
+            from scipy.spatial.transform import Rotation
+            x0_rot = Rotation.from_matrix(R_current).as_rotvec()
+        except Exception:
+            x0_rot = _rodrigues_inverse(R_current)
 
         if self.verbose:
             print(f"\n📐 ConstraintInstantiator [pick 模式]")
@@ -407,13 +424,13 @@ class ConstraintInstantiator:
             print(f"  avoid 目标: {list(avoid_kps.keys())}")
             print(f"  VLM 决策:   {vlm_decision}")
 
-        best_cost     = float('inf')
-        best_cost_fn  = None
+        best_cost         = float('inf')
+        best_cost_fn      = None
         best_breakdown_fn = None
-        best_x0       = None
-        best_meta_part = None
+        best_x0           = None
+        best_meta_part    = None
 
-        # ── 遍历所有 grasp 候选，筛选最优交互点 ──
+        # ── 遍历所有 grasp 候选，完整优化筛选最优交互点 ──
         for part_name, keypoint_3d in grasp_kps.items():
             sap = get_sap_strict(part_name)
 
@@ -422,48 +439,48 @@ class ConstraintInstantiator:
                 part_name, sap, keypoint_3d, object_center
             )
 
-            # 目标接触点 = 关键点沿接近方向退后 offset
-            contact_point = keypoint_3d - approach_dir * self.approach_offset
-
-            # 叉积法计算 rvec 初始值（修复梯度死区 bug）
-            rvec_init = _compute_rvec_init(approach_dir, sap.grasp_axis)
-
-            # 初始 x0：接触点位置 + 叉积法旋转
-            x0 = np.concatenate([contact_point, rvec_init])
+            # x0 位置：hand link 放在"指尖对准关键点"的位置
+            x0_pos = keypoint_3d - gripper_z_cur * FINGER_LENGTH
+            x0     = np.concatenate([x0_pos, x0_rot])
 
             # 构建代价函数
             cost_fn, breakdown_fn = _build_cost_fn(
-                contact_point = contact_point,
-                approach_dir  = approach_dir,
-                grasp_axis    = sap.grasp_axis,
-                avoid_kps     = avoid_kps,
-                vlm_decision  = vlm_decision,
-                mode          = "pick",
+                keypoint_3d  = keypoint_3d,
+                approach_dir = approach_dir,
+                grasp_axis   = sap.grasp_axis,
+                avoid_kps    = avoid_kps,
+                vlm_decision = vlm_decision,
+                mode         = "pick",
             )
 
-            # 快速 SLSQP 筛选
-            x_quick, cost_quick = _quick_slsqp(cost_fn, x0)
+            # 完整 SLSQP（200次），结果可靠
+            result = minimize(
+                fun     = cost_fn,
+                x0      = x0,
+                method  = 'SLSQP',
+                options = {'maxiter': 200, 'ftol': 1e-6, 'disp': False}
+            )
+            cost_val = float(result.fun)
 
             if self.verbose:
-                print(f"  [{part_name}] approach={np.round(approach_dir,3)} "
-                      f"quick_cost={cost_quick:.4f}")
+                print(f"  [{part_name}] approach={np.round(approach_dir, 3)} "
+                      f"cost={cost_val:.4f}")
 
-            if cost_quick < best_cost:
-                best_cost         = cost_quick
+            if cost_val < best_cost:
+                best_cost         = cost_val
                 best_cost_fn      = cost_fn
                 best_breakdown_fn = breakdown_fn
-                best_x0           = x_quick          # 精化后的 x0 给 PoseSolver
+                best_x0           = result.x
                 best_meta_part    = {
                     'part_name':    part_name,
                     'approach_dir': approach_dir,
-                    'contact_pt':   contact_point,
-                    'grasp_axis':   sap.grasp_axis,
                     'keypoint_3d':  keypoint_3d,
+                    'grasp_axis':   sap.grasp_axis,
                 }
 
         if self.verbose:
             print(f"  ✅ 最优交互点: {best_meta_part['part_name']} "
-                  f"(quick_cost={best_cost:.4f})")
+                  f"(cost={best_cost:.4f})")
 
         meta = {
             'mode':               'pick',
@@ -471,12 +488,11 @@ class ConstraintInstantiator:
             'avoid_targets':      list(avoid_kps.keys()),
             'object_center':      object_center,
             'approach_direction': best_meta_part['approach_dir'],
-            'contact_point':      best_meta_part['contact_pt'],
-            'grasp_axis_target':  best_meta_part['grasp_axis'],
             'keypoint_3d':        best_meta_part['keypoint_3d'],
+            'grasp_axis_target':  best_meta_part['grasp_axis'],
             'vlm_decision':       vlm_decision,
             'cost_breakdown_fn':  best_breakdown_fn,
-            'candidate_quick_cost': best_cost,
+            'candidate_best_cost': best_cost,
         }
 
         return best_cost_fn, best_x0, meta
@@ -488,6 +504,7 @@ class ConstraintInstantiator:
             place_kps:    Dict[str, np.ndarray],
             avoid_kps:    Dict[str, Tuple[np.ndarray, float]],
             vlm_decision: VLMDecision,
+            T_current:    np.ndarray,
     ) -> Tuple[Callable, np.ndarray, Dict]:
         """
         Place 模式：单一 surface 目标，构建含 C1/C2/C4/C5 的代价函数。
@@ -498,26 +515,32 @@ class ConstraintInstantiator:
         place_sap          = get_sap_strict(place_target_name)
 
         # place 模式接近方向固定为 [0,0,-1]（始终从上方放下）
-        approach_dir  = place_sap.approach_direction.copy()  # [0,0,-1]
+        approach_dir = place_sap.approach_direction.copy()  # [0,0,-1]
 
-        # 目标停靠点：surface 正上方 offset 处
-        contact_point = place_target_point - approach_dir * self.approach_offset
+        # 从 T_current 提取当前末端状态
+        R_current     = T_current[:3, :3]
+        gripper_z_cur = R_current @ np.array([0., 0., 1.])
 
-        # 旋转初始值：place 模式夹爪 Z 向下，Y 轴任意水平方向
-        rvec_init = _compute_rvec_init(
-            approach_dir = approach_dir,
-            grasp_axis   = np.array([1.0, 0.0, 0.0]),  # place 模式 Y 轴取 X 方向
-        )
-        x0 = np.concatenate([contact_point, rvec_init])
+        # x0 位置：hand link 放在"指尖对准关键点"的位置
+        x0_pos = place_target_point - gripper_z_cur * FINGER_LENGTH
+
+        # x0 旋转：当前末端姿态的轴角表示
+        try:
+            from scipy.spatial.transform import Rotation
+            x0_rot = Rotation.from_matrix(R_current).as_rotvec()
+        except Exception:
+            x0_rot = _rodrigues_inverse(R_current)
+
+        x0 = np.concatenate([x0_pos, x0_rot])
 
         # 构建代价函数（place 模式无 C3，grasp_axis 传 None）
         cost_fn, breakdown_fn = _build_cost_fn(
-            contact_point = contact_point,
-            approach_dir  = approach_dir,
-            grasp_axis    = None,
-            avoid_kps     = avoid_kps,
-            vlm_decision  = vlm_decision,
-            mode          = "place",
+            keypoint_3d  = place_target_point,
+            approach_dir = approach_dir,
+            grasp_axis   = None,
+            avoid_kps    = avoid_kps,
+            vlm_decision = vlm_decision,
+            mode         = "place",
         )
 
         if self.verbose:
@@ -525,7 +548,6 @@ class ConstraintInstantiator:
             print(f"  放置目标: {place_target_name}")
             print(f"  avoid 目标: {list(avoid_kps.keys())}")
             print(f"  surface 坐标: {np.round(place_target_point, 3)}")
-            print(f"  目标停靠点:   {np.round(contact_point, 3)}")
             print(f"  VLM 决策:     {vlm_decision}")
 
         meta = {
@@ -533,7 +555,6 @@ class ConstraintInstantiator:
             'place_target':       place_target_name,
             'avoid_targets':      list(avoid_kps.keys()),
             'approach_direction': approach_dir,
-            'target_point':       contact_point,
             'keypoint_3d':        place_target_point,
             'vlm_decision':       vlm_decision,
             'cost_breakdown_fn':  breakdown_fn,
@@ -548,10 +569,16 @@ if __name__ == "__main__":
     sys.path.insert(0, '.')
 
     from modules.vlmDecider import VLMDecision, FALLBACK_DECISION
+    from modules.IKSolver   import IKSolver, Q_HOME
 
     print("=" * 70)
-    print("测试 ConstraintInstantiator（重构版）")
+    print("测试 ConstraintInstantiator")
     print("=" * 70)
+
+    # 用 Q_HOME 的 FK 作为测试用的 T_current
+    ik = IKSolver(verbose=False)
+    T_current = ik.forward_kinematics(Q_HOME)
+    print(f"\n  T_current（Q_HOME FK）末端位置: {np.round(T_current[:3,3], 4)}")
 
     fallback = FALLBACK_DECISION
 
@@ -565,6 +592,7 @@ if __name__ == "__main__":
             'body':   np.array([0.45,  0.00,  0.08]),
         },
         vlm_decision = fallback,
+        T_current    = T_current,
     )
     assert meta['mode'] == 'pick'
     assert meta['grasp_target'] in ['handle', 'body']
@@ -573,14 +601,16 @@ if __name__ == "__main__":
     print(f"  ✅ mode=pick, grasp_target={meta['grasp_target']}, "
           f"cost={cost_fn(x0):.4f}")
 
-    # ── 【2】C2 旋转代价验证（x0 初始代价应接近 0）──
-    print("\n【2】C2 接近方向旋转代价（叉积初始化验证）")
+    # ── 【2】C1/C5 代价验证 ──
+    print("\n【2】代价分解验证")
     bd_x0 = meta['cost_breakdown_fn'](x0)
-    print(f"  approach_rot(C2) at x0 = {bd_x0['approach_rot']:.6f}  （应接近 0）")
-    print(f"  grasp_axis  (C3) at x0 = {bd_x0['grasp_axis']:.6f}   （应接近 0）")
-    assert bd_x0['approach_rot'] < 0.01, "C2 初始代价过高，叉积初始化可能失败"
-    assert bd_x0['grasp_axis']   < 0.01, "C3 初始代价过高"
-    print("  ✅ 叉积法初始化有效，梯度死区修复验证通过")
+    print(f"  approach_pos(C1) at x0 = {bd_x0['approach_pos']:.6f}")
+    print(f"  approach_rot(C2) at x0 = {bd_x0['approach_rot']:.6f}")
+    print(f"  grasp_axis  (C3) at x0 = {bd_x0['grasp_axis']:.6f}")
+    print(f"  flip        (C5) at x0 = {bd_x0['flip']:.6f}")
+    assert 'flip' in bd_x0, "cost_breakdown 缺少 flip 字段"
+    assert 'upright' not in bd_x0, "cost_breakdown 不应含旧字段 upright"
+    print("  ✅ 字段验证通过")
 
     # ── 【3】bottle — neck 和 body 同时候选，优化选最优 ──
     print("\n【3】bottle — neck vs body 候选竞争")
@@ -592,6 +622,7 @@ if __name__ == "__main__":
             'body': np.array([0.50, 0.00, 0.10]),
         },
         vlm_decision = fallback,
+        T_current    = T_current,
     )
     assert meta_b['mode'] == 'pick'
     print(f"  ✅ 最优交互点: {meta_b['grasp_target']}（由优化自然涌现）")
@@ -600,7 +631,7 @@ if __name__ == "__main__":
     print("\n【4】tray — place 模式")
     inst_t = ConstraintInstantiator(verbose=True)
     place_fallback = VLMDecision(
-        w_grasp_axis=0.0, w_safety=2.0, w_upright=1.5,
+        w_grasp_axis=0.0, w_safety=2.0, w_flip=1.5,
         confidence=0.0, reasoning="fallback", is_fallback=True
     )
     cost_fn_t, x0_t, meta_t = inst_t.instantiate(
@@ -609,6 +640,7 @@ if __name__ == "__main__":
             'rim':     np.array([0.60, 0.10, 0.05]),
         },
         vlm_decision = place_fallback,
+        T_current    = T_current,
     )
     assert meta_t['mode'] == 'place'
     assert meta_t['place_target'] == 'surface'
@@ -624,7 +656,8 @@ if __name__ == "__main__":
         inst.instantiate(
             {'handle': np.array([0.1, 0.0, 0.1]),
              'surface': np.array([0.6, 0.1, 0.0])},
-            fallback
+            fallback,
+            T_current,
         )
         print("  ❌ 未报错！")
     except ValueError as e:
@@ -633,4 +666,3 @@ if __name__ == "__main__":
     print("\n" + "=" * 70)
     print("✅ ConstraintInstantiator 所有测试通过！")
     print("=" * 70)
-    
