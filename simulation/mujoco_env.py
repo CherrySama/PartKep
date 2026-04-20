@@ -31,6 +31,11 @@ GRIPPER_CLOSE = 0.0
 # 越多越平滑，但越慢；5步约等于 0.01s 仿真时间
 STEPS_PER_WAYPOINT = 5
 
+# execute_trajectory 每个 waypoint 后的 sleep 时间（秒）
+# 这是控制真实播放速度的主要参数
+# 0.01 → 约 1s/100waypoints，整段约 3s（n_steps=300 时）
+SLEEP_PER_WAYPOINT = 0.01
+
 
 class MuJoCoEnv:
     """
@@ -88,6 +93,7 @@ class MuJoCoEnv:
             for _ in range(STEPS_PER_WAYPOINT):
                 mujoco.mj_step(self.model, self.data)
             self.viewer.sync()
+            time.sleep(SLEEP_PER_WAYPOINT)
         print("  ✅ 轨迹执行完成")
 
     def get_site_xpos(self, site_name: str) -> np.ndarray:

@@ -147,6 +147,10 @@ def main():
     pose_solver = PoseSolver(max_iter=200, tol=1e-6, verbose=True)
     ik          = IKSolver(verbose=True)
 
+    # ConstraintInstantiator.instantiate() 需要 T_current（当前末端位姿）
+    T_current = ik.forward_kinematics(Q_HOME)
+    print(f"\n  T_current (Q_HOME FK) 末端位置: {np.round(T_current[:3,3], 4)}")
+
     # ══════════════════════════════════════════════════
     # PICK：cup 抓取
     # ══════════════════════════════════════════════════
@@ -154,21 +158,21 @@ def main():
     print("【PICK】cup 抓取")
     print("=" * 60)
 
-    # pick 模式：w_upright=0，因为 handle 是侧向抓取，不需要竖直约束。
-    # FALLBACK_DECISION 的 w_upright=1.0 会导致优化器排斥 handle（水平接近
-    # 时 C5=1.0），直接选择 body（竖直接近时 C5=0）。
-    # 这不是 bug，而是 VLM 应负责的语义决策：VLM 看到 handle 后会把 w_upright
-    # 设为 0。这里为测试 handle 抓取，手动模拟这一行为。
+    # pick 模式：w_flip=1.0 防止 wrist flip（C5 惩罚夹爪与接近方向反向）
+    # 注：原 w_upright 已改为 w_flip，语义不同：
+    #   旧 w_upright 惩罚末端偏离竖直，侧向抓取时需设为 0
+    #   新 w_flip    惩罚末端方向与 approach_dir 反向，始终应激活
     from modules.vlmDecider import VLMDecision
     pick_decision = VLMDecision(
-        w_grasp_axis=1.0, w_safety=2.0, w_upright=0.0,
-        confidence=0.0, reasoning="test: upright=0 for lateral handle grasp",
+        w_grasp_axis=1.0, w_safety=2.0, w_flip=1.0,
+        confidence=0.0, reasoning="test: pick with wrist flip penalty",
         is_fallback=True
     )
 
     cost_fn_pick, x0_pick, meta_pick = inst.instantiate(
         keypoints_3d = CUP_KEYPOINTS,
         vlm_decision = pick_decision,
+        T_current    = T_current,
     )
 
     pose_pick = pose_solver.solve(cost_fn_pick, x0_pick, meta_pick)
@@ -186,16 +190,17 @@ def main():
     print("【PLACE】tray 放置")
     print("=" * 60)
 
-    # place 模式的 VLMDecision（w_grasp_axis=0）
+    # place 模式的 VLMDecision（w_grasp_axis=0，w_flip 防止放置时 wrist flip）
     from modules.vlmDecider import VLMDecision
     place_decision = VLMDecision(
-        w_grasp_axis=0.0, w_safety=2.0, w_upright=1.5,
+        w_grasp_axis=0.0, w_safety=2.0, w_flip=1.5,
         confidence=0.0, reasoning="fallback", is_fallback=True
     )
 
     cost_fn_place, x0_place, meta_place = inst.instantiate(
         keypoints_3d = TRAY_KEYPOINTS,
         vlm_decision = place_decision,
+        T_current    = T_current,
     )
 
     pose_place = pose_solver.solve(cost_fn_place, x0_place, meta_place)

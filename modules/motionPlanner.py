@@ -36,7 +36,7 @@ from modules.IKSolver import Q_HOME
 
 # 每段轨迹的 IK 迭代步数
 # gain=1.0 + n_steps=100 → 约 100 步内收敛，速度快
-N_STEPS_PER_SEGMENT = 100
+N_STEPS_PER_SEGMENT = 300
 
 # 微分 IK 的时间步长（影响每步的关节角增量大小，不影响仿真时间）
 DT = 0.01
@@ -123,12 +123,27 @@ class MotionPlanner:
         self.lift_height = lift_height
         self.verbose     = verbose
 
+        # ── 验证 QP 求解器可用 ──
+        try:
+            import quadprog  # noqa: F401
+            self._solver = "quadprog"
+        except ImportError:
+            try:
+                import osqp    # noqa: F401
+                self._solver = "osqp"
+            except ImportError:
+                raise ImportError(
+                    "mink 需要 QP 求解器，请安装：pip install quadprog\n"
+                    "（或 pip install osqp）"
+                )
+
         if verbose:
             print("=" * 55)
             print("初始化 MotionPlanner（mink 微分 IK）")
             print(f"  末端帧  : {EE_BODY_NAME} (body)")
             print(f"  每段步数: {n_steps}  dt={dt}")
             print(f"  抬升高度: {lift_height*100:.0f} cm")
+            print(f"  QP 求解器: {self._solver}")
             print("=" * 55)
 
     # ── 公开接口 ──────────────────────────────────────────────────────────────
@@ -149,34 +164,48 @@ class MotionPlanner:
             List[np.ndarray]: 关节角 waypoints，每个 shape=(7,)
         """
         # ── 初始化 mink Configuration ──
-        # 从 keyframe "home" 重置完整状态（保证手指/杯子等 DOF 合法），
-        # 再覆盖 arm 的 qpos，保证起始位形正确。
-        data = mujoco.MjData(self.model)
-        mujoco.mj_resetDataKeyframe(self.model, data, 0)
-        data.qpos[:7] = q_start
-        mujoco.mj_forward(self.model, data)
-        configuration = mink.Configuration(self.model, data)
+        # mink.Configuration 内部自己管理 MjData，不接受外部 data 参数。
+        # 先从 keyframe "home" 初始化完整 qpos（保证手指/freejoint 合法），
+        # 再把 arm 的 7 个关节覆盖为 q_start。
+        configuration = mink.Configuration(self.model)
+        configuration.update_from_keyframe("home")
+        # 覆盖 arm joints（qpos 前 7 个）
+        q_full = configuration.q.copy()
+        q_full[:7] = q_start
+        configuration.update(q=q_full)
 
         # ── 构造目标 SE3 ──
         target_se3 = _matrix_to_mink_se3(T_target)
 
         # ── 创建末端执行器任务（6DOF，位置+姿态全约束）──
+        gain = 1.0 - 0.01 ** (1.0 / self.n_steps)
         task = mink.FrameTask(
             frame_name=EE_BODY_NAME,
             frame_type="body",
             position_cost=1.0,
             orientation_cost=1.0,
-            gain=1.0,            # 最快收敛
+            gain=gain,            # 最快收敛
         )
         task.set_target(target_se3)
 
         # ── 添加关节限位约束 ──
-        limits = [mink.ConfigurationLimit(self.model)]
+        # ConfigurationLimit 类名因 mink 版本而异，做兼容处理
+        try:
+            limits = [mink.ConfigurationLimit(self.model)]
+        except AttributeError:
+            try:
+                limits = [mink.JointVelocityLimit(self.model)]
+            except AttributeError:
+                limits = []  # 无限位约束，由上游 IKSolver 保证
 
         # ── 微分 IK 循环（离线，不推进物理）──
         waypoints = []
         for _ in range(self.n_steps):
-            vel = mink.solve_ik(configuration, [task], self.dt, limits=limits)
+            vel = mink.solve_ik(
+                    configuration, [task], self.dt,
+                    solver=self._solver,
+                    limits=limits,
+                )
             configuration.integrate_inplace(vel, self.dt)
             waypoints.append(configuration.q[:7].copy())
 
@@ -246,4 +275,3 @@ class MotionPlanner:
             print(f"  总 waypoints: {len(all_waypoints)}")
 
         return all_waypoints
-        
