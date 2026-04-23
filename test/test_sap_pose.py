@@ -158,14 +158,11 @@ def main():
     print("【PICK】cup 抓取")
     print("=" * 60)
 
-    # pick 模式：w_flip=1.0 防止 wrist flip（C5 惩罚夹爪与接近方向反向）
-    # 注：原 w_upright 已改为 w_flip，语义不同：
-    #   旧 w_upright 惩罚末端偏离竖直，侧向抓取时需设为 0
-    #   新 w_flip    惩罚末端方向与 approach_dir 反向，始终应激活
+    # pick 模式：翻转保护由 C2=(1-dot)² 在几何层内建，不再需要 w_flip
     from modules.vlmDecider import VLMDecision
     pick_decision = VLMDecision(
-        w_grasp_axis=1.0, w_safety=2.0, w_flip=1.0,
-        confidence=0.0, reasoning="test: pick with wrist flip penalty",
+        w_grasp_axis=1.0, w_safety=2.0,
+        confidence=0.0, reasoning="test: pick",
         is_fallback=True
     )
 
@@ -190,10 +187,10 @@ def main():
     print("【PLACE】tray 放置")
     print("=" * 60)
 
-    # place 模式的 VLMDecision（w_grasp_axis=0，w_flip 防止放置时 wrist flip）
+    # place 模式：w_grasp_axis=0（place 不需要夹爪对齐轴），翻转保护同样由 C2 内建
     from modules.vlmDecider import VLMDecision
     place_decision = VLMDecision(
-        w_grasp_axis=0.0, w_safety=2.0, w_flip=1.5,
+        w_grasp_axis=0.0, w_safety=2.0,
         confidence=0.0, reasoning="fallback", is_fallback=True
     )
 

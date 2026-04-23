@@ -5,7 +5,7 @@ Created by Yinghao Ho on 2026-2-23
 核心职责：
     将语义关键点 + SAP 知识库 + VLMDecision → 可被 SLSQP 直接调用的数值代价函数
 
-约束体系（共 5 个）：
+约束体系（共 4 个）：
     ┌────────┬──────────────────────────────┬──────────┬──────────────┐
     │ 编号   │ 含义                         │ 控制方   │ 适用模式     │
     ├────────┼──────────────────────────────┼──────────┼──────────────┤
@@ -13,20 +13,22 @@ Created by Yinghao Ho on 2026-2-23
     │ C2     │ 夹爪 Z 轴对齐接近方向        │ 固定     │ pick + place │
     │ C3     │ 夹爪 Y 轴对齐 SAP grasp_axis │ VLM      │ pick 专用    │
     │ C4     │ 安全距离惩罚（指尖距离）     │ VLM      │ pick + place │
-    │ C5     │ Wrist Flip 惩罚              │ VLM      │ pick + place │
     └────────┴──────────────────────────────┴──────────┴──────────────┘
 
     C1/C2 属于 SAP 几何职责，始终激活，权重固定。
-    C3/C4/C5 属于语义约束，权重由 VLMDecision 提供。
+    C2 采用 (1-dot)² 形式：d=+1（正向对齐）→ 0，d=-1（wrist flip）→ 4，
+    翻转保护由数学形式内建，不依赖语义权重控制，不能被 VLM 关掉。
+    C3/C4 属于语义约束，权重由 VLMDecision 提供。
+    P1 为几何正则项（ε·‖rvec‖²），防止轴角 Rodrigues 奇点，权重固定。
 
 归一化说明：
     - C1：(||fingertip - keypoint|| / FINGER_LENGTH)²    → [0, ∞)
           fingertip = pos + (R@[0,0,1]) * FINGER_LENGTH
-    - C2：1 - dot(gripper_Z, approach_dir)²              → [0, 1]
+    - C2：(1 - dot(gripper_Z, approach_dir))²            → [0, 4]
+          d=+1（正向对齐）→ 0，d=0（垂直）→ 1，d=-1（wrist flip）→ 4
     - C3：1 - dot(gripper_Y, grasp_axis)²                → [0, 1]
     - C4：Σ max(0, 1 - ||fingertip-p_avoid||/margin)²   → [0, N_avoid]
-    - C5：((1 - dot(gripper_Z, approach_dir)) / 2)²      → [0, 1]
-          d=+1（正向对齐）→ 0，d=-1（wrist flip）→ 1
+    - P1：ε · ‖rvec‖²                                    → [0, ∞)
 
 最优交互点选择机制：
     Pick 模式对每个 grasp 候选关键点分别构建 cost_fn 并运行完整 SLSQP（200次），
@@ -57,14 +59,15 @@ from utils import CoordinateTransformer
 
 # ==================== 固定权重（C1、C2）====================
 W_APPROACH_POS = 1.0    # C1 位置对齐（固定）
-W_APPROACH_ROT = 1.0    # C2 接近方向旋转对齐（固定）
+W_APPROACH_ROT = 1.0    # C2 接近方向旋转对齐（固定，新公式值域[0,4]，需重新验证）
+
+# ==================== 几何正则项权重 ====================
+EPS_RVEC_REG = 1e-6     # P1 轴角正则化（ε·‖rvec‖²），防止 Rodrigues 奇点
 
 # ==================== 几何参数（来自 panda.xml 实测）====================
 # hand link 原点 → 指尖 pad 中心（沿 hand Z 轴）
 # 来源：finger pos=0.0584 + pad_1 center=0.0445 = 0.1029m ≈ 0.103m
 FINGER_LENGTH  = 0.103
-# 实际停靠距离：留 8mm 裕量，避免指尖硬接触关键点表面
-CONTACT_OFFSET = 0.095
 
 
 # ==================== 辅助函数 ====================
@@ -177,116 +180,98 @@ def _build_cost_fn(
         approach_dir   : 归一化接近方向（运行时修正后）
         grasp_axis     : 归一化夹爪张开轴（pick 专用，place 传 None）
         avoid_kps      : {part_name → (point_3d, margin)} 需回避的部件
-        vlm_decision   : VLM 约束决策（C3/C4/C5 权重）
+        vlm_decision   : VLM 约束决策（C3/C4 权重）
         mode           : "pick" 或 "place"
 
     Returns:
         (cost_fn, cost_breakdown_fn) 元组
     """
     # ── 固定参数（闭包捕获） ──
-    _kp    = keypoint_3d.copy()         # 目标关键点（物体表面）
+    _kp    = keypoint_3d.copy()
     _app   = approach_dir.copy()
     _gavt  = grasp_axis.copy() if grasp_axis is not None else None
     _avd   = {k: (v[0].copy(), v[1]) for k, v in avoid_kps.items()}
-    _mode  = mode
-    _L     = FINGER_LENGTH              # hand link → 指尖距离（物理常量）
+    _L     = FINGER_LENGTH
 
     # ── 固定权重 ──
     _wc1 = W_APPROACH_POS
     _wc2 = W_APPROACH_ROT
+    _eps  = EPS_RVEC_REG
 
-    # ── VLM 权重（pick 下 C3 有效，place 下强制 0） ──
-    _wc3 = vlm_decision.w_grasp_axis if _mode == "pick" else 0.0
+    # ── VLM 权重（C3 pick 专用，place 强制 0） ──
+    _wc3 = vlm_decision.w_grasp_axis if mode == "pick" else 0.0
     _wc4 = vlm_decision.w_safety
-    _wc5 = vlm_decision.w_flip
 
-    def cost_fn(x: np.ndarray) -> float:
-        pos  = x[:3]
-        rvec = x[3:]
-        R    = CoordinateTransformer.rodrigues(rvec)
-
-        gripper_z = R @ np.array([0.0, 0.0, 1.0])   # 夹爪接近轴（世界系）
-        gripper_y = R @ np.array([0.0, 1.0, 0.0])   # 夹爪张开轴（世界系）
-
-        # 指尖世界坐标（C1/C4 的核心几何量）
-        fingertip = pos + gripper_z * _L
-
-        # C1：指尖位置对齐代价，归一化到 [0,∞)
-        c1_dist = float(np.linalg.norm(fingertip - _kp))
-        c1 = (c1_dist / _L) ** 2
-
-        # C2：接近方向旋转代价（固定，[0,1]）
-        c2 = 1.0 - float(np.dot(gripper_z, _app)) ** 2
-
-        # C3：夹爪张开轴对齐代价（pick 专用，[0,1]）
-        c3 = 0.0
-        if _gavt is not None:
-            c3 = 1.0 - float(np.dot(gripper_y, _gavt)) ** 2
-
-        # C4：安全距离惩罚（指尖到 avoid 部件，每项 [0,1]）
-        c4 = 0.0
-        for p_avoid, margin in _avd.values():
-            dist = float(np.linalg.norm(fingertip - p_avoid))
-            v    = max(0.0, 1.0 - dist / margin)
-            c4  += v * v
-
-        # C5：Wrist Flip 惩罚，处处连续可微，[0,1]
-        # d=+1（正向对齐）→ 0，d=0（垂直）→ 0.25，d=-1（翻转）→ 1
-        d  = float(np.dot(gripper_z, _app))
-        c5 = ((1.0 - d) / 2.0) ** 2
-
-        return float(
-            _wc1 * c1 +
-            _wc2 * c2 +
-            _wc3 * c3 +
-            _wc4 * c4 +
-            _wc5 * c5
-        )
-
-    def cost_breakdown_fn(x: np.ndarray) -> Dict:
-        pos  = x[:3]
-        rvec = x[3:]
-        R    = CoordinateTransformer.rodrigues(rvec)
-
+    # ── 中间量计算（Rodrigues 只算一次） ──
+    def _compute_intermediates(x: np.ndarray):
+        pos       = x[:3]
+        rvec      = x[3:]
+        R         = CoordinateTransformer.rodrigues(rvec)
         gripper_z = R @ np.array([0.0, 0.0, 1.0])
         gripper_y = R @ np.array([0.0, 1.0, 0.0])
-
         fingertip = pos + gripper_z * _L
+        return gripper_z, gripper_y, fingertip, rvec
 
-        c1_dist = float(np.linalg.norm(fingertip - _kp))
-        c1 = (c1_dist / _L) ** 2
+    # ── 独立约束函数（接收已算好的中间量） ──
+    def _c1_position(fingertip: np.ndarray) -> float:
+        """C1：指尖位置对齐代价"""
+        return (float(np.linalg.norm(fingertip - _kp)) / _L) ** 2
 
-        c2 = 1.0 - float(np.dot(gripper_z, _app)) ** 2
+    def _c2_approach(gripper_z: np.ndarray) -> float:
+        """C2：接近方向对齐代价，(1-dot)²，d=-1时=4（翻转），d=+1时=0（对齐）"""
+        d = float(np.clip(np.dot(gripper_z, _app), -1.0, 1.0))
+        return (1.0 - d) ** 2
 
-        c3 = 0.0
-        if _gavt is not None:
-            c3 = 1.0 - float(np.dot(gripper_y, _gavt)) ** 2
+    def _c3_grasp_axis(gripper_y: np.ndarray) -> float:
+        """C3：夹爪张开轴对齐代价，dot²保证对称夹爪Y/-Y等价"""
+        if _gavt is None:
+            return 0.0
+        d = float(np.clip(np.dot(gripper_y, _gavt), -1.0, 1.0))
+        return 1.0 - d ** 2
 
-        c4              = 0.0
-        safety_per_part = {}
+    def _c4_safety(fingertip: np.ndarray):
+        """C4：安全距离惩罚，返回 (total, per_part_dict)"""
+        total    = 0.0
+        per_part = {}
         for pname, (p_avoid, margin) in _avd.items():
             dist = float(np.linalg.norm(fingertip - p_avoid))
             v    = max(0.0, 1.0 - dist / margin)
             val  = v * v
-            safety_per_part[pname] = val
-            c4 += val
+            per_part[pname] = val
+            total += val
+        return total, per_part
 
-        d  = float(np.dot(gripper_z, _app))
-        c5 = ((1.0 - d) / 2.0) ** 2
+    def _p1_rvec_reg(rvec: np.ndarray) -> float:
+        """P1：轴角正则化，防止 Rodrigues 奇点"""
+        return float(np.dot(rvec, rvec))
 
-        total = _wc1*c1 + _wc2*c2 + _wc3*c3 + _wc4*c4 + _wc5*c5
+    # ── 代价函数（SLSQP 调用） ──
+    def cost_fn(x: np.ndarray) -> float:
+        gz, gy, fingertip, rvec = _compute_intermediates(x)
+        c1       = _c1_position(fingertip)
+        c2       = _c2_approach(gz)
+        c3       = _c3_grasp_axis(gy)
+        c4, _    = _c4_safety(fingertip)
+        p1       = _p1_rvec_reg(rvec)
+        return float(_wc1*c1 + _wc2*c2 + _wc3*c3 + _wc4*c4 + _eps*p1)
 
+    # ── 代价分解函数（调试用，与 cost_fn 共享中间量计算） ──
+    def cost_breakdown_fn(x: np.ndarray) -> Dict:
+        gz, gy, fingertip, rvec = _compute_intermediates(x)
+        c1               = _c1_position(fingertip)
+        c2               = _c2_approach(gz)
+        c3               = _c3_grasp_axis(gy)
+        c4, safety_parts = _c4_safety(fingertip)
+        p1               = _p1_rvec_reg(rvec)
+        total = _wc1*c1 + _wc2*c2 + _wc3*c3 + _wc4*c4 + _eps*p1
         return {
-            'total':            float(total),
-            'approach_pos':     float(_wc1 * c1),
-            'approach_rot':     float(_wc2 * c2),
-            'grasp_axis':       float(_wc3 * c3),
-            'safety':           float(_wc4 * c4),
-            'flip':             float(_wc5 * c5),
-            'safety_per_part':  safety_per_part,
-            # 向后兼容字段
-            'approach':         float(_wc1 * c1),
-            'grasp':            float(_wc3 * c3),
+            'total':           float(total),
+            'approach_pos':    float(_wc1 * c1),
+            'approach_rot':    float(_wc2 * c2),
+            'grasp_axis':      float(_wc3 * c3),
+            'safety':          float(_wc4 * c4),
+            'safety_per_part': safety_parts,
+            'rvec_reg':        float(_eps  * p1),
         }
 
     return cost_fn, cost_breakdown_fn
@@ -309,7 +294,7 @@ class ConstraintInstantiator:
         返回其 cost_fn 和对应 x0 供 PoseSolver 精细优化。
 
     Place 模式：
-        单一 surface 目标，构建含 C1/C2/C4/C5 的代价函数。
+        单一 surface 目标，构建含 C1/C2/C4 的代价函数。
 
     使用示例（pick）：
         >>> from modules.vlmDecider import VLMDecider
@@ -407,17 +392,6 @@ class ConstraintInstantiator:
         all_pts       = list(grasp_kps.values()) + [v[0] for v in avoid_kps.values()]
         object_center = np.mean(np.stack(all_pts), axis=0)
 
-        # 从 T_current 提取当前末端状态
-        R_current     = T_current[:3, :3]
-        gripper_z_cur = R_current @ np.array([0., 0., 1.])
-
-        # x0 旋转：当前末端姿态的轴角表示
-        try:
-            from scipy.spatial.transform import Rotation
-            x0_rot = Rotation.from_matrix(R_current).as_rotvec()
-        except Exception:
-            x0_rot = _rodrigues_inverse(R_current)
-
         if self.verbose:
             print(f"\n📐 ConstraintInstantiator [pick 模式]")
             print(f"  grasp 候选: {list(grasp_kps.keys())}")
@@ -440,8 +414,9 @@ class ConstraintInstantiator:
             )
 
             # x0 位置：hand link 放在"指尖对准关键点"的位置
-            x0_pos = keypoint_3d - gripper_z_cur * FINGER_LENGTH
-            x0     = np.concatenate([x0_pos, x0_rot])
+            x0_rot_per = _compute_rvec_init(approach_dir, sap.grasp_axis)
+            x0_pos     = keypoint_3d - approach_dir * FINGER_LENGTH
+            x0         = np.concatenate([x0_pos, x0_rot_per])
 
             # 构建代价函数
             cost_fn, breakdown_fn = _build_cost_fn(
@@ -507,7 +482,7 @@ class ConstraintInstantiator:
             T_current:    np.ndarray,
     ) -> Tuple[Callable, np.ndarray, Dict]:
         """
-        Place 模式：单一 surface 目标，构建含 C1/C2/C4/C5 的代价函数。
+        Place 模式：单一 surface 目标，构建含 C1/C2/C4 的代价函数。
         末端从上方（[0,0,-1]）接近，物体平稳落到承载面。
         """
         place_target_name  = next(iter(place_kps))
@@ -517,14 +492,10 @@ class ConstraintInstantiator:
         # place 模式接近方向固定为 [0,0,-1]（始终从上方放下）
         approach_dir = place_sap.approach_direction.copy()  # [0,0,-1]
 
-        # 从 T_current 提取当前末端状态
-        R_current     = T_current[:3, :3]
-        gripper_z_cur = R_current @ np.array([0., 0., 1.])
-
         # x0 位置：hand link 放在"指尖对准关键点"的位置
-        x0_pos = place_target_point - gripper_z_cur * FINGER_LENGTH
-
-        # x0 旋转：当前末端姿态的轴角表示
+        x0_pos = place_target_point - approach_dir * FINGER_LENGTH
+        # x0 旋转：从 T_current 提取，Q_HOME 时夹爪 Z ≈ [0,0,-1]，与 approach_dir 对齐
+        R_current = T_current[:3, :3]
         try:
             from scipy.spatial.transform import Rotation
             x0_rot = Rotation.from_matrix(R_current).as_rotvec()
@@ -601,15 +572,17 @@ if __name__ == "__main__":
     print(f"  ✅ mode=pick, grasp_target={meta['grasp_target']}, "
           f"cost={cost_fn(x0):.4f}")
 
-    # ── 【2】C1/C5 代价验证 ──
+    # ── 【2】代价分解验证 ──
     print("\n【2】代价分解验证")
     bd_x0 = meta['cost_breakdown_fn'](x0)
     print(f"  approach_pos(C1) at x0 = {bd_x0['approach_pos']:.6f}")
     print(f"  approach_rot(C2) at x0 = {bd_x0['approach_rot']:.6f}")
     print(f"  grasp_axis  (C3) at x0 = {bd_x0['grasp_axis']:.6f}")
-    print(f"  flip        (C5) at x0 = {bd_x0['flip']:.6f}")
-    assert 'flip' in bd_x0, "cost_breakdown 缺少 flip 字段"
-    assert 'upright' not in bd_x0, "cost_breakdown 不应含旧字段 upright"
+    print(f"  safety      (C4) at x0 = {bd_x0['safety']:.6f}")
+    print(f"  rvec_reg    (P1) at x0 = {bd_x0['rvec_reg']:.6f}")
+    # 架构守卫：C5/flip 已移除，翻转保护由 C2=(1-dot)² 在几何层内建
+    assert 'flip' not in bd_x0, "cost_breakdown 不应含已移除的 flip 字段"
+    assert 'rvec_reg' in bd_x0, "cost_breakdown 应含 P1 正则项 rvec_reg"
     print("  ✅ 字段验证通过")
 
     # ── 【3】bottle — neck 和 body 同时候选，优化选最优 ──
@@ -631,7 +604,7 @@ if __name__ == "__main__":
     print("\n【4】tray — place 模式")
     inst_t = ConstraintInstantiator(verbose=True)
     place_fallback = VLMDecision(
-        w_grasp_axis=0.0, w_safety=2.0, w_flip=1.5,
+        w_grasp_axis=0.0, w_safety=2.0,
         confidence=0.0, reasoning="fallback", is_fallback=True
     )
     cost_fn_t, x0_t, meta_t = inst_t.instantiate(

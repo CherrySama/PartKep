@@ -7,14 +7,14 @@ test_cost_fn_numerical.py
     python test/test_cost_fn_numerical.py
 
 覆盖的验证点：
-    【1】VLMDecision.w_flip 字段
+    【1】VLMDecision 接口守卫（w_flip 已从语义层移除）
     【2】C1 物理正确性：指尖对准关键点时 C1 趋近 0
-    【3】C2 方向对齐：gripper_z 对齐 approach_dir 时 C2=0
-    【4】C5 数学性质：正向对齐→0，垂直→0.25，反向→1
-    【5】C5 与 C2 非线性相关验证
+    【3】C2 新公式 (1-dot)²：对齐时=0，wrist flip 时=4，无盲区
+    【4】C2 数学性质：正向对齐→0，垂直→1，反向→4，严格单调
+    【5】P1 rvec 正则项：‖rvec‖=0 时 P1=0，增大时单调递增
     【6】C4 指尖距离：指尖远离 avoid 部件时 C4=0
     【7】cost_breakdown 总和一致性
-    【8】旧字段 upright 不存在，新字段 flip 存在
+    【8】breakdown 字段完整性：flip 已移除，rvec_reg 已新增
     【9】候选筛选：代价低的候选胜出
     【10】x0 来自 T_current，数值合理（无 NaN/Inf）
     【11】place 模式 C3 = 0
@@ -27,7 +27,7 @@ sys.path.insert(0, '.')
 
 # ── 导入被测模块 ──
 from modules.vlmDecider    import VLMDecision, FALLBACK_DECISION
-from modules.constraintsInst import ConstraintInstantiator, FINGER_LENGTH, CONTACT_OFFSET
+from modules.constraintsInst import ConstraintInstantiator, FINGER_LENGTH, _build_cost_fn
 from modules.IKSolver       import IKSolver, Q_HOME
 from utils                  import CoordinateTransformer
 
@@ -56,33 +56,31 @@ print(f"  T_current 末端位置: {np.round(T_current[:3,3], 4)}")
 print(f"  gripper_z 方向:     {np.round(gz_current, 4)}")
 
 # =====================================================================
-# 【1】VLMDecision.w_flip 字段
+# 【1】VLMDecision 接口守卫
 # =====================================================================
 print("\n" + "=" * 65)
-print("【1】VLMDecision.w_flip 字段验证")
+print("【1】VLMDecision 接口守卫（w_flip 已从语义层移除）")
 print("=" * 65)
 
+# 架构守卫：w_flip 已从 VLMDecision 字段定义中移除
+# 翻转保护由 C2=(1-dot)² 在几何层内建，不应由语义权重控制
+check('w_flip' not in VLMDecision.__dataclass_fields__,
+      "VLMDecision 字段定义中不含 w_flip（架构守卫）")
+
 d = VLMDecision(
-    w_grasp_axis=1.0, w_safety=2.0, w_flip=1.5,
+    w_grasp_axis=1.0, w_safety=2.0,
     confidence=0.9, reasoning="test", is_fallback=False
 )
-check(hasattr(d, 'w_flip'),      "VLMDecision 有 w_flip 字段")
-check(d.w_flip == 1.5,           "w_flip 值正确")
-check(not hasattr(d, 'w_upright'), "VLMDecision 无旧字段 w_upright")
-check('w_flip' in repr(d),      "repr 包含 w_flip")
-check('w_upright' not in repr(d), "repr 不含旧字段 w_upright")
+check(d.w_grasp_axis == 1.0,          "w_grasp_axis 值正确")
+check(d.w_safety == 2.0,              "w_safety 值正确")
+check('w_flip' not in repr(d),        "repr 不含 w_flip")
+check(not d.is_fallback,              "is_fallback=False")
 
-# 校验：负权重应报错
-try:
-    VLMDecision(w_grasp_axis=0.0, w_safety=0.0, w_flip=-0.1,
-                confidence=0.5, reasoning="", is_fallback=False)
-    check(False, "负 w_flip 应抛出 ValueError")
-except ValueError:
-    check(True, "负 w_flip 正确抛出 ValueError")
-
-# FALLBACK_DECISION 字段检查
-check(hasattr(FALLBACK_DECISION, 'w_flip'), "FALLBACK_DECISION 有 w_flip 字段")
-check(FALLBACK_DECISION.w_flip > 0,         "FALLBACK_DECISION.w_flip > 0")
+# FALLBACK_DECISION 同样不含 w_flip
+check('w_flip' not in FALLBACK_DECISION.__dataclass_fields__,
+      "FALLBACK_DECISION 无 w_flip 字段")
+check(FALLBACK_DECISION.w_safety > 0, "FALLBACK_DECISION.w_safety > 0")
+check(FALLBACK_DECISION.is_fallback,  "FALLBACK_DECISION.is_fallback=True")
 
 # =====================================================================
 # 辅助：构建一个最简单的 cost_fn 用于后续测试
@@ -97,9 +95,6 @@ fallback = FALLBACK_DECISION
 inst     = ConstraintInstantiator(verbose=False)
 
 cost_fn, breakdown_fn = None, None
-
-# 直接调用内部函数 _build_cost_fn
-from modules.constraintsInst import _build_cost_fn
 
 cost_fn, breakdown_fn = _build_cost_fn(
     keypoint_3d  = KEYPOINT,
@@ -143,18 +138,18 @@ print(f"  指尖到关键点距离 = {ft_err*1000:.4f} mm  （应趋近 0）")
 check(ft_err < 1e-6, f"指尖到关键点距离 < 1e-6 m（实际: {ft_err:.2e} m）")
 
 # =====================================================================
-# 【3】C2 方向对齐
+# 【3】C2 新公式：对齐时=0，wrist flip 时=4，无盲区
 # =====================================================================
 print("\n" + "=" * 65)
-print("【3】C2：gripper_z 对齐 approach_dir 时 C2=0")
+print("【3】C2 新公式 (1-dot)²：对齐时=0，wrist flip 时=4")
 print("=" * 65)
 
 bd_aligned = breakdown_fn(x_perfect)
 c2_aligned = bd_aligned['approach_rot']
-print(f"  对齐时 C2 = {c2_aligned:.8f}  （应 = 0）")
-check(c2_aligned < 1e-6, f"C2 对齐时 < 1e-6（实际: {c2_aligned:.2e}）")
+print(f"  正向对齐时 C2 = {c2_aligned:.8f}  （应 = 0）")
+check(c2_aligned < 1e-6, f"C2 在正向对齐时 = 0（实际: {c2_aligned:.2e}）")
 
-# 反向：gripper_z = -approach_dir
+# wrist flip：gripper_z = -approach_dir，新公式 C2=(1-(-1))²=4
 R_flip    = np.column_stack([
     np.cross(GRASP_AXIS, -APPROACH),
     GRASP_AXIS,
@@ -163,58 +158,85 @@ R_flip    = np.column_stack([
 rvec_flip = Rotation.from_matrix(R_flip).as_rotvec()
 x_flip    = np.concatenate([pos_aligned, rvec_flip])
 bd_flip   = breakdown_fn(x_flip)
-c2_flip   = bd_flip['approach_rot'] / fallback.w_safety  # 去权重看原始值
-# C2 原始值 = 1 - dot(-app, app)^2 = 1 - (-1)^2 = 0
-# 所以 C2 在 flip 时也是 0（这正是 C5 存在的原因）
-c2_raw_flip = 1.0 - float(np.dot(-APPROACH, APPROACH)) ** 2
-print(f"  反向时 C2 原始值 = {c2_raw_flip:.4f}  （应 = 0，验证 C2 对 flip 盲区）")
-check(abs(c2_raw_flip) < 1e-6, "C2 对 wrist flip 确实为 0（验证盲区存在）")
+# 去权重得到原始 C2 值：bd['approach_rot'] = W_APPROACH_ROT * c2，W=1.0
+c2_raw_flip = bd_flip['approach_rot']
+print(f"  wrist flip 时 C2 = {c2_raw_flip:.4f}  （新公式应 = 4.0，无盲区）")
+check(abs(c2_raw_flip - 4.0) < 1e-6,
+      f"新 C2 在 wrist flip 时 = 4.0，不再为 0（实际: {c2_raw_flip:.4f}）")
 
 # =====================================================================
-# 【4】C5 数学性质
+# 【4】C2 数学性质：(1-dot)² 严格单调，无盲区
 # =====================================================================
 print("\n" + "=" * 65)
-print("【4】C5 数学性质：((1-d)/2)²")
+print("【4】C2 数学性质：(1-dot)²，d=+1→0，d=0→1，d=-1→4")
 print("=" * 65)
 
-def c5_formula(d: float) -> float:
-    return ((1.0 - d) / 2.0) ** 2
+def c2_formula(d: float) -> float:
+    return (1.0 - d) ** 2
 
-cases = [
-    (+1.0, 0.0,    "正向对齐 d=+1 → C5=0"),
-    ( 0.0, 0.25,   "垂直     d= 0 → C5=0.25"),
-    (-1.0, 1.0,    "wrist flip d=-1 → C5=1"),
-    (+0.5, 0.0625, "部分对齐 d=+0.5 → C5=0.0625"),
+cases_c2 = [
+    (+1.0, 0.0, "正向对齐 d=+1 → C2=0"),
+    ( 0.0, 1.0, "垂直     d= 0 → C2=1"),
+    (-1.0, 4.0, "wrist flip d=-1 → C2=4（无盲区）"),
+    (+0.5, 0.25,"部分对齐 d=+0.5 → C2=0.25"),
 ]
-for d_val, expected, desc in cases:
-    c5_val = c5_formula(d_val)
-    print(f"  {desc}：{c5_val:.6f}  （期望 {expected}）")
-    check(abs(c5_val - expected) < 1e-8, desc)
+for d_val, expected, desc in cases_c2:
+    c2_val = c2_formula(d_val)
+    print(f"  {desc}：{c2_val:.6f}  （期望 {expected}）")
+    check(abs(c2_val - expected) < 1e-8, desc)
 
-# 连续性：在 d=0 两侧导数是否连续
-eps   = 1e-6
-grad_left  = (c5_formula(0.0) - c5_formula(-eps)) / eps
-grad_right = (c5_formula(eps) - c5_formula(0.0)) / eps
-print(f"  d=0 处左导数={grad_left:.6f}，右导数={grad_right:.6f}  （应相等）")
-check(abs(grad_left - grad_right) < 1e-4, "C5 在 d=0 处导数连续")
+# 严格单调性：d 增大时 C2 单调递减
+d_vals = [-1.0, -0.5, 0.0, 0.5, 1.0]
+c2_vals = [c2_formula(d) for d in d_vals]
+print(f"  C2 随 d 变化: {[round(v,4) for v in c2_vals]}")
+for i in range(len(c2_vals) - 1):
+    check(c2_vals[i] > c2_vals[i+1],
+          f"C2 严格单调递减：d={d_vals[i]} → d={d_vals[i+1]}")
+
+# 处处 C¹ 连续：在 d=0 处导数连续
+eps        = 1e-6
+grad_left  = (c2_formula(0.0) - c2_formula(-eps)) / eps
+grad_right = (c2_formula(eps) - c2_formula(0.0)) / eps
+print(f"  d=0 处左导数={grad_left:.4f}，右导数={grad_right:.4f}  （应相等，均为 2.0）")
+check(abs(grad_left - grad_right) < 1e-4, "C2 在 d=0 处导数连续")
 
 # =====================================================================
-# 【5】C5 与 C2 非线性相关验证
+# 【5】P1 rvec 正则项：防止轴角 Rodrigues 奇点
 # =====================================================================
 print("\n" + "=" * 65)
-print("【5】C5 与 C2 非线性相关验证（wrist flip 区间梯度互补）")
+print("【5】P1 rvec 正则项：‖rvec‖=0 时 P1=0，增大时单调递增")
 print("=" * 65)
 
-for d_val in [-1.0, -0.5, 0.0, 0.5, 1.0]:
-    c2_raw = 1.0 - d_val ** 2
-    c5_raw = ((1.0 - d_val) / 2.0) ** 2
-    print(f"  d={d_val:+.1f}  C2={c2_raw:.4f}  C5={c5_raw:.4f}")
+from modules.constraintsInst import EPS_RVEC_REG
 
-# 关键验证：d=-1 时 C2=0 但 C5=1（互补）
-check(abs((1.0 - (-1.0)**2)) < 1e-8,          "d=-1 时 C2=0（盲区）")
-check(abs(((1-(-1))/2)**2 - 1.0) < 1e-8,      "d=-1 时 C5=1（补足惩罚）")
-check(abs((1.0 - 1.0**2)) < 1e-8,             "d=+1 时 C2=0（正确对齐无惩罚）")
-check(abs(((1-1.0)/2)**2) < 1e-8,             "d=+1 时 C5=0（正确对齐无惩罚）")
+# rvec=0 时 P1 应为 0
+x_zero_rvec = np.concatenate([pos_aligned, np.zeros(3)])
+bd_zero     = breakdown_fn(x_zero_rvec)
+p1_zero     = bd_zero['rvec_reg']
+print(f"  rvec=[0,0,0] 时 P1 = {p1_zero:.2e}  （应 = 0）")
+check(p1_zero < 1e-10, f"P1 在 rvec=0 时为 0（实际: {p1_zero:.2e}）")
+
+# rvec 增大时 P1 单调递增
+rvec_norms = [0.1, 0.5, 1.0, np.pi]
+p1_prev    = 0.0
+for norm_val in rvec_norms:
+    rvec_test  = np.array([norm_val, 0.0, 0.0])
+    x_test     = np.concatenate([pos_aligned, rvec_test])
+    bd_test    = breakdown_fn(x_test)
+    p1_test    = bd_test['rvec_reg']
+    expected   = EPS_RVEC_REG * norm_val ** 2
+    print(f"  ‖rvec‖={norm_val:.2f} → P1={p1_test:.2e}  期望={expected:.2e}")
+    check(abs(p1_test - expected) < 1e-12,
+          f"P1 = EPS·‖rvec‖²（‖rvec‖={norm_val}）")
+    check(p1_test > p1_prev, f"P1 随 ‖rvec‖ 单调递增")
+    p1_prev = p1_test
+
+# P1 权重极小，不影响主代价量级
+bd_main = breakdown_fn(x_perfect)
+p1_main = bd_main['rvec_reg']
+c1_main = bd_main['approach_pos']
+print(f"  正常姿态下 P1={p1_main:.2e} vs C1={c1_main:.4f}（P1 量级远小于约束项）")
+check(p1_main < 1e-3, "P1 正则项量级远小于主约束项，不干扰优化")
 
 # =====================================================================
 # 【6】C4 指尖距离
@@ -283,20 +305,23 @@ for i in range(5):
     check(diff < 1e-8, f"cost_fn 与 breakdown total 一致（diff={diff:.2e}）")
 
 # =====================================================================
-# 【8】字段名检查：flip 存在，upright 不存在
+# 【8】breakdown 字段完整性：flip 已移除，rvec_reg 已新增
 # =====================================================================
 print("\n" + "=" * 65)
-print("【8】字段名检查")
+print("【8】breakdown 字段完整性验证")
 print("=" * 65)
 
 bd_check = breakdown_fn(x_perfect)
-check('flip'   in bd_check,    "cost_breakdown 有 'flip' 字段")
-check('upright' not in bd_check, "cost_breakdown 无旧字段 'upright'")
+# 应存在的字段
 check('approach_pos' in bd_check, "cost_breakdown 有 'approach_pos'")
 check('approach_rot' in bd_check, "cost_breakdown 有 'approach_rot'")
 check('grasp_axis'   in bd_check, "cost_breakdown 有 'grasp_axis'")
 check('safety'       in bd_check, "cost_breakdown 有 'safety'")
 check('total'        in bd_check, "cost_breakdown 有 'total'")
+check('rvec_reg'     in bd_check, "cost_breakdown 有新增 P1 正则项 'rvec_reg'")
+# 架构守卫：已移除的字段不应出现
+check('flip'    not in bd_check, "cost_breakdown 不含已移除的 'flip' 字段（架构守卫）")
+check('upright' not in bd_check, "cost_breakdown 不含旧字段 'upright'")
 
 # =====================================================================
 # 【9】候选筛选：代价低的候选胜出
@@ -362,7 +387,7 @@ print("【11】place 模式 C3=0 验证")
 print("=" * 65)
 
 place_decision = VLMDecision(
-    w_grasp_axis=0.0, w_safety=2.0, w_flip=1.5,
+    w_grasp_axis=0.0, w_safety=2.0,
     confidence=0.0, reasoning="test", is_fallback=True
 )
 _, x0_place, meta_place = inst.instantiate(
@@ -376,9 +401,10 @@ _, x0_place, meta_place = inst.instantiate(
 bd_place = meta_place['cost_breakdown_fn'](x0_place)
 check(meta_place['mode'] == 'place',    "模式为 place")
 check(bd_place['grasp_axis'] == 0.0,   f"place 模式 C3=0（实际: {bd_place['grasp_axis']}）")
-check('flip' in bd_place,              "place 模式 cost_breakdown 有 flip 字段")
+check('flip' not in bd_place,          "place 模式 cost_breakdown 不含 flip（架构守卫）")
+check('rvec_reg' in bd_place,          "place 模式 cost_breakdown 含 P1 正则项")
 print(f"  place C3(grasp_axis) = {bd_place['grasp_axis']}")
-print(f"  place C5(flip)       = {bd_place['flip']:.6f}")
+print(f"  place P1(rvec_reg)   = {bd_place['rvec_reg']:.2e}")
 
 # =====================================================================
 # 汇总
