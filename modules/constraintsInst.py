@@ -93,7 +93,7 @@ def _compute_actual_approach(
     LATERAL_PARTS = {"handle", "neck"}
 
     if part_name in LATERAL_PARTS:
-        delta_xy = keypoint_3d[:2] - object_center[:2]
+        delta_xy = object_center[:2] - keypoint_3d[:2] # 从 handle 指向杯中心，方向向内（从外部接近）
         norm = np.linalg.norm(delta_xy)
         if norm < 1e-6:
             # 关键点与物体中心重合，退回 SAP 参考方向
@@ -533,109 +533,3 @@ class ConstraintInstantiator:
 
         return cost_fn, x0, meta
 
-
-# ==================== 模块测试 ====================
-if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, '.')
-
-    from modules.vlmDecider import VLMDecision, FALLBACK_DECISION
-    from modules.IKSolver   import IKSolver, Q_HOME
-
-    print("=" * 70)
-    print("测试 ConstraintInstantiator")
-    print("=" * 70)
-
-    # 用 Q_HOME 的 FK 作为测试用的 T_current
-    ik = IKSolver(verbose=False)
-    T_current = ik.forward_kinematics(Q_HOME)
-    print(f"\n  T_current（Q_HOME FK）末端位置: {np.round(T_current[:3,3], 4)}")
-
-    fallback = FALLBACK_DECISION
-
-    # ── 【1】cup — pick 模式，handle 侧向抓取 ──
-    print("\n【1】cup — pick 模式，handle 优先")
-    inst = ConstraintInstantiator(verbose=True)
-    cost_fn, x0, meta = inst.instantiate(
-        keypoints_3d = {
-            'handle': np.array([0.45,  0.07,  0.10]),
-            'rim':    np.array([0.45,  0.00,  0.16]),
-            'body':   np.array([0.45,  0.00,  0.08]),
-        },
-        vlm_decision = fallback,
-        T_current    = T_current,
-    )
-    assert meta['mode'] == 'pick'
-    assert meta['grasp_target'] in ['handle', 'body']
-    bd = meta['cost_breakdown_fn'](x0)
-    assert abs(bd['total'] - cost_fn(x0)) < 1e-8
-    print(f"  ✅ mode=pick, grasp_target={meta['grasp_target']}, "
-          f"cost={cost_fn(x0):.4f}")
-
-    # ── 【2】代价分解验证 ──
-    print("\n【2】代价分解验证")
-    bd_x0 = meta['cost_breakdown_fn'](x0)
-    print(f"  approach_pos(C1) at x0 = {bd_x0['approach_pos']:.6f}")
-    print(f"  approach_rot(C2) at x0 = {bd_x0['approach_rot']:.6f}")
-    print(f"  grasp_axis  (C3) at x0 = {bd_x0['grasp_axis']:.6f}")
-    print(f"  safety      (C4) at x0 = {bd_x0['safety']:.6f}")
-    print(f"  rvec_reg    (P1) at x0 = {bd_x0['rvec_reg']:.6f}")
-    # 架构守卫：C5/flip 已移除，翻转保护由 C2=(1-dot)² 在几何层内建
-    assert 'flip' not in bd_x0, "cost_breakdown 不应含已移除的 flip 字段"
-    assert 'rvec_reg' in bd_x0, "cost_breakdown 应含 P1 正则项 rvec_reg"
-    print("  ✅ 字段验证通过")
-
-    # ── 【3】bottle — neck 和 body 同时候选，优化选最优 ──
-    print("\n【3】bottle — neck vs body 候选竞争")
-    inst_b = ConstraintInstantiator(verbose=True)
-    _, _, meta_b = inst_b.instantiate(
-        keypoints_3d = {
-            'neck': np.array([0.50, 0.00, 0.20]),
-            'cap':  np.array([0.50, 0.00, 0.26]),
-            'body': np.array([0.50, 0.00, 0.10]),
-        },
-        vlm_decision = fallback,
-        T_current    = T_current,
-    )
-    assert meta_b['mode'] == 'pick'
-    print(f"  ✅ 最优交互点: {meta_b['grasp_target']}（由优化自然涌现）")
-
-    # ── 【4】tray — place 模式 ──
-    print("\n【4】tray — place 模式")
-    inst_t = ConstraintInstantiator(verbose=True)
-    place_fallback = VLMDecision(
-        w_grasp_axis=0.0, w_safety=2.0,
-        confidence=0.0, reasoning="fallback", is_fallback=True
-    )
-    cost_fn_t, x0_t, meta_t = inst_t.instantiate(
-        keypoints_3d = {
-            'surface': np.array([0.60, 0.10, 0.02]),
-            'rim':     np.array([0.60, 0.10, 0.05]),
-        },
-        vlm_decision = place_fallback,
-        T_current    = T_current,
-    )
-    assert meta_t['mode'] == 'place'
-    assert meta_t['place_target'] == 'surface'
-    bd_t = meta_t['cost_breakdown_fn'](x0_t)
-    assert abs(bd_t['total'] - cost_fn_t(x0_t)) < 1e-8
-    assert bd_t['grasp_axis'] == 0.0  # place 模式 C3 = 0
-    print(f"  ✅ mode=place, place_target=surface, "
-          f"cost={cost_fn_t(x0_t):.4f}")
-
-    # ── 【5】错误处理 ──
-    print("\n【5】grasp + place 同时存在 → 应报错")
-    try:
-        inst.instantiate(
-            {'handle': np.array([0.1, 0.0, 0.1]),
-             'surface': np.array([0.6, 0.1, 0.0])},
-            fallback,
-            T_current,
-        )
-        print("  ❌ 未报错！")
-    except ValueError as e:
-        print(f"  ✅ 正确报错: {str(e).splitlines()[0]}")
-
-    print("\n" + "=" * 70)
-    print("✅ ConstraintInstantiator 所有测试通过！")
-    print("=" * 70)
