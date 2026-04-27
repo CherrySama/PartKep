@@ -36,16 +36,16 @@
 
     <!--
       杯子（freejoint，可被 weld 约束拾起）
-      杯子中心 z=0.45（桌面0.4 + cylinder半高0.05）
+      杯子中心 z=0.452（桌面0.4 + cylinder半高0.05 + 2mm 接触裕度）
       关键点 site 颜色：红=把手 绿=杯身 蓝=杯口
     -->
-    <body name="cup" pos="0.5 0.05 0.45">
+    <body name="cup" pos="0.5 0.05 0.452">
       <freejoint name="cup_free"/>
       <geom name="cup_body"   type="cylinder" size="0.04 0.05"
             pos="0 0 0"      material="mat_cup"    mass="0.2"
             contype="1" conaffinity="1"/>
       <geom name="cup_handle" type="box"      size="0.015 0.025 0.035"
-            pos="0.055 0 0"  material="mat_handle" mass="0.05"
+            pos="0.055 0 0"  material="mat_handle" mass="0.01"
             contype="1" conaffinity="1"/>
       <!-- 把手外表面：cylinder_r(0.04) + handle_half_x*2(0.03) = 0.07 -->
       <site name="kp_handle" pos="0.07 0 0"   size="0.007" rgba="1 0 0 1"/>
@@ -56,7 +56,7 @@
     </body>
 
     <!-- 托盘（静态 place 目标）：黄色 site 标记放置点 -->
-    <body name="tray" pos="0.5 -0.2 0.405">
+    <body name="tray" pos="0.5 -0.2 0.406">
       <geom name="tray_surface" type="box" size="0.08 0.08 0.005"
             pos="0 0 0" material="mat_tray"
             contype="1" conaffinity="1"/>
