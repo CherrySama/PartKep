@@ -38,7 +38,8 @@ PANDA_JOINT_LIMITS = np.array([
 
 Q_HOME = np.array([0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853])
 
-_W_ROT = 0.1   # 旋转误差权重（位置精度优先）
+_W_POS = 1000.0  # 位置误差权重（锁住位置，防止旋转梯度拉偏）
+_W_ROT = 1.0     # 旋转误差权重
 
 
 # ── 主类 ──────────────────────────────────────────────────────────────────────
@@ -135,24 +136,59 @@ class IKSolver:
             print(f"\n🦾 IK 求解（MuJoCo-native，最多 {n_restarts} 次）")
             print(f"  目标位置: {np.round(p_target, 4)}")
 
+        def _cost_pos_only(q7: np.ndarray) -> float:
+            """阶段一：仅位置代价，用于得到位置对准的热启动点 q_warm"""
+            self._data.qpos[:7] = q7
+            mujoco.mj_forward(self._model, self._data)
+            p = self._data.xpos[self._hand_id]
+            return float(np.sum((p - p_target) ** 2))
+
         def _cost(q7: np.ndarray) -> float:
+            """阶段二：完整代价，位置 + 旋转"""
             self._data.qpos[:7] = q7
             mujoco.mj_forward(self._model, self._data)
             p = self._data.xpos[self._hand_id]
             R = self._data.xmat[self._hand_id].reshape(3, 3)
-            return np.sum((p - p_target) ** 2) + _W_ROT * np.sum((R - R_target) ** 2)
+            return _W_POS * np.sum((p - p_target) ** 2) + _W_ROT * np.sum((R - R_target) ** 2)
+
+        # ── 阶段一：仅位置优化，得到位置对准的热启动点 q_warm ──
+        # 从 q_init 出发，只最小化位置误差，忽略旋转。
+        # 避免大旋转差场景下旋转梯度主导、位置收敛被牺牲的问题。
+        res_warm = minimize(
+            fun     = _cost_pos_only,
+            x0      = q_init.copy(),
+            method  = 'L-BFGS-B',
+            bounds  = bounds,
+            options = {'maxiter': 1000, 'ftol': 1e-15, 'gtol': 1e-10},
+        )
+        q_warm = res_warm.x
+        print(f"  [诊断] q_warm 位置误差: {np.linalg.norm(self.forward_kinematics(q_warm)[:3,3] - p_target)*1000:.2f} mm")
 
         best = None   # 记录误差最小的结果（成功或失败）
+        T_warm        = self.forward_kinematics(q_warm)
+        err_warm      = float(np.linalg.norm(T_warm[:3, 3] - p_target))
+        in_limits_warm = bool(np.all(
+            (q_warm >= PANDA_JOINT_LIMITS[:, 0]) &
+            (q_warm <= PANDA_JOINT_LIMITS[:, 1])
+        ))
+        best = {
+            'success':        (err_warm < 0.005) and in_limits_warm,
+            'q':              q_warm,
+            'position_error': err_warm,
+            'within_limits':  in_limits_warm,
+            'fk_position':    T_warm[:3, 3],
+        }
 
         for attempt in range(n_restarts):
-            # 第 0 次热启动，后续随机初始化
+            # 第 0 次：从 q_warm 出发（位置已对准，只需微调旋转）
+            # 后续：在 q_warm 上加小扰动，保持在正确位置附近探索旋转解
             if attempt == 0:
-                q0 = q_init.copy()
+                q0 = q_warm.copy()
             else:
-                q0 = np.random.uniform(
-                    PANDA_JOINT_LIMITS[:, 0],
-                    PANDA_JOINT_LIMITS[:, 1]
-                )
+                q0 = q_warm.copy()
+                q0 += np.random.normal(0, 0.3, size=7)
+                q0[3] = np.clip(q0[3], -3.0, -0.1)   # joint4 限位必须为负
+                q0 = np.clip(q0, PANDA_JOINT_LIMITS[:, 0], PANDA_JOINT_LIMITS[:, 1])
 
             res = minimize(
                 fun     = _cost,
