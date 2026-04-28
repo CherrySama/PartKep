@@ -1,5 +1,17 @@
 """
-Created by Yinghao Ho on 2026-4-20
+Experiment 1: Visual Pipeline Test
+Tests the full visual pipeline from task instruction to annotated keypoint image.
+
+Pipeline:
+    instruction -> TaskParser -> GroundingDINO -> ImageProcessor
+                -> SAM3Segmenter -> build_annotated_image -> save result
+
+Each case returns a structured dict that feeds directly into Experiment 2
+(VLM constraint decision) without re-running the visual pipeline.
+
+Usage:
+    cd /workspace/PartKep
+    python test/test_visual_pipeline.py
 """
 
 import sys
@@ -26,6 +38,17 @@ TEST_CASES = [
     {
         "instruction": "pick up the leftmost cup",
         "image_path":  PROJECT_ROOT / "images/cups.png",
+    },
+    # kitchen scene -- detection_prompt overrides TaskParser output for GroundingDINO
+    {
+        "instruction":      "pick up the cup",
+        "detection_prompt": "orange cup on table",
+        "image_path":       PROJECT_ROOT / "images/mujoco.png",
+    },
+    {
+        "instruction":      "pick up the bottle",
+        "detection_prompt": "brown bottle with VOSS label",
+        "image_path":       PROJECT_ROOT / "images/kitchen.png",
     },
 ]
 
@@ -65,13 +88,16 @@ def _check_keypoint_proximity(
 def run_single_case(
     instruction: str,
     image_path:  Path,
-    parser:      TaskParser,
-    detector:    GroundingDINODetector,
-    processor:   ImageProcessor,
-    segmenter:   SAM3Segmenter,
+    parser:           TaskParser,
+    detector:         GroundingDINODetector,
+    processor:        ImageProcessor,
+    segmenter:        SAM3Segmenter,
+    detection_prompt: Optional[str] = None,
 ) -> Optional[Dict]:
     """Run the full visual pipeline for one instruction-image pair.
 
+    detection_prompt overrides the TaskParser-derived prompt for GroundingDINO,
+    allowing richer spatial/attribute descriptions without changing the instruction.
     Returns a dict ready for Experiment 2 (VLMDecider), or None on failure.
     """
     print(f"\n  instruction : {instruction!r}")
@@ -87,10 +113,12 @@ def run_single_case(
         print(f"  [parse] FAILED -- {e}")
         return None
     timings["parse"] = time.perf_counter() - t0
+
+    # detection_prompt: explicit override > TaskParser-derived prompt
+    det_prompt = detection_prompt if detection_prompt else spec.get_detection_prompt()
     print(f"  [parse]     {timings['parse']:.3f}s  "
           f"object='{spec.object_label}'  "
-          f"modifier={spec.spatial_modifier!r}  "
-          f"prompt='{spec.get_detection_prompt()}'")
+          f"det_prompt='{det_prompt}'")
 
     # 2. load image
     try:
@@ -103,13 +131,13 @@ def run_single_case(
     t0 = time.perf_counter()
     detection_results = detector.detect(
         image=image,
-        text_prompt=spec.get_detection_prompt(),
+        text_prompt=det_prompt,
         box_threshold=0.35,
         text_threshold=0.25,
     )
     timings["detection"] = time.perf_counter() - t0
     if not detection_results:
-        print(f"  [detect]    FAILED -- '{spec.get_detection_prompt()}' not found")
+        print(f"  [detect]    FAILED -- '{det_prompt}' not found")
         return None
     bbox = detection_results[0]["bbox"]
     print(f"  [detect]    {timings['detection']:.3f}s  "
@@ -208,6 +236,7 @@ def run_all_cases() -> List[Optional[Dict]]:
             detector=detector,
             processor=processor,
             segmenter=segmenter,
+            detection_prompt=case.get("detection_prompt"),
         )
         pipeline_results.append(result)
 

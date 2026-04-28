@@ -97,9 +97,9 @@ class GroundingDINODetector:
         if len(results_hf["boxes"]) == 0:
             return []
 
-        boxes_abs  = results_hf["boxes"].cpu().numpy()   # (N, 4) [x1,y1,x2,y2]
-        scores_np  = results_hf["scores"].cpu().numpy()  # (N,)
-        labels_list = results_hf["labels"]               # List[str]
+        boxes_abs   = results_hf["boxes"].cpu().numpy()       # (N, 4) [x1,y1,x2,y2]
+        scores_np   = results_hf["scores"].cpu().numpy()      # (N,)
+        labels_list = results_hf["text_labels"]               # List[str], use text_labels since v4.51
 
         # NMS to remove overlapping boxes
         keep = nms(
