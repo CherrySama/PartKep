@@ -1,0 +1,106 @@
+[
+  {
+    "instruction": "pick up the cup",
+    "mode": "pick",
+    "keypoints_2d": {
+      "handle": [
+        91.0,
+        571.0
+      ],
+      "rim": [
+        496.0,
+        336.0
+      ],
+      "body": [
+        495.08390668606927,
+        486.51792199654545
+      ]
+    },
+    "annotated_path": "/home/yinghao/Desktop/PartKep/images/results/cup3_cup_result.jpg",
+    "timings": {
+      "parse": 4.168200007370615e-05,
+      "detection": 0.8955028300000549,
+      "crop": 0.001017933999946763,
+      "segment": 0.9092328920000909,
+      "annotate": 0.007455480999965403
+    }
+  },
+  {
+    "instruction": "pick up the leftmost cup",
+    "mode": "pick",
+    "keypoints_2d": {
+      "handle": [
+        334.0,
+        387.0
+      ],
+      "rim": [
+        193.0,
+        422.0
+      ],
+      "body": [
+        192.0,
+        423.0
+      ]
+    },
+    "annotated_path": "/home/yinghao/Desktop/PartKep/images/results/cups_leftmost_cup_result.jpg",
+    "timings": {
+      "parse": 1.9145999999636842e-05,
+      "detection": 0.21427455900004588,
+      "crop": 0.00011209100000542094,
+      "segment": 0.8729529650000813,
+      "annotate": 0.005811150999988968
+    }
+  },
+  {
+    "instruction": "pick up the cup",
+    "mode": "pick",
+    "keypoints_2d": {
+      "handle": [
+        219.0,
+        575.0
+      ],
+      "rim": [
+        333.0,
+        528.0
+      ],
+      "body": [
+        340.84311714944886,
+        579.9841066393233
+      ]
+    },
+    "annotated_path": "/home/yinghao/Desktop/PartKep/images/results/kitchen_cup_result.jpg",
+    "timings": {
+      "parse": 1.6904000062822888e-05,
+      "detection": 0.29074050399992757,
+      "crop": 6.800099993142794e-05,
+      "segment": 0.8690150310000035,
+      "annotate": 0.008267077000027712
+    }
+  },
+  {
+    "instruction": "pick up the bottle",
+    "mode": "pick",
+    "keypoints_2d": {
+      "cap": [
+        461.65446224256294,
+        352.140350877193
+      ],
+      "neck": [
+        461.92413793103447,
+        369.1137931034483
+      ],
+      "body": [
+        465.3285587451909,
+        485.927730097662
+      ]
+    },
+    "annotated_path": "/home/yinghao/Desktop/PartKep/images/results/kitchen_bottle_result.jpg",
+    "timings": {
+      "parse": 1.8347000036555983e-05,
+      "detection": 0.28638514499994017,
+      "crop": 7.418699999561795e-05,
+      "segment": 0.8675017589999925,
+      "annotate": 0.00828277400000843
+    }
+  }
+]

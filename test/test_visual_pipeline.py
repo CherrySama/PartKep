@@ -42,8 +42,8 @@ TEST_CASES = [
     # kitchen scene -- detection_prompt overrides TaskParser output for GroundingDINO
     {
         "instruction":      "pick up the cup",
-        "detection_prompt": "orange cup on table",
-        "image_path":       PROJECT_ROOT / "images/mujoco.png",
+        "detection_prompt": "blue ceramic mug on the left side of the table",
+        "image_path":       PROJECT_ROOT / "images/kitchen.png",
     },
     {
         "instruction":      "pick up the bottle",
@@ -258,6 +258,24 @@ def run_all_cases() -> List[Optional[Dict]]:
             print(f"  FAIL  {case['instruction']!r}")
     print(f"\nResults saved to: {OUTPUT_DIR}/")
     print("=" * 70)
+
+    # save pipeline results to disk for Experiment 2 (separate process)
+    import json
+    records = []
+    for r in pipeline_results:
+        if r is None:
+            continue
+        records.append({
+            "instruction":    r["instruction"],
+            "mode":           r["mode"],
+            "keypoints_2d":   {k: list(v) for k, v in r["keypoints_2d"].items()},
+            "annotated_path": str(r["annotated_path"]),
+            "timings":        r["timings"],
+        })
+    out_json = OUTPUT_DIR / "pipeline_results.json"
+    with open(out_json, "w") as f:
+        json.dump(records, f, indent=2)
+    print(f"Pipeline results saved to: {out_json}")
 
     return pipeline_results
 

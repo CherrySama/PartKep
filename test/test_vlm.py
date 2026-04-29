@@ -2,15 +2,18 @@
 Experiment 2: VLM Constraint Decision Test
 Created by Yinghao Ho on 2026-04
 
-Takes structured results from Experiment 1 and passes them to VLMDecider.
-Only runs the specified VLM_TEST_CASES through the visual pipeline,
-not the full Experiment 1 suite.
+Reads pipeline_results.json produced by Experiment 1 (separate process),
+then runs VLMDecider on each case. Keeps visual models and VLM in separate
+processes to avoid VRAM conflicts.
 
-Usage:
-    cd /workspace/PartKep
+Run Experiment 1 first:
+    python test/test_visual_pipeline.py
+
+Then run this:
     python test/test_vlm_decider.py
 """
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -19,37 +22,29 @@ from typing import Dict, List, Optional
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.vlmDecider import VLMDecider, VLMDecision
-from modules import GroundingDINODetector, ImageProcessor, SAM3Segmenter, TaskParser
-
-sys.path.insert(0, str(PROJECT_ROOT / "test"))
-from test_visual_pipeline import run_single_case
+from PIL import Image
+from modules.vlmDecider import VLMDecider
 
 # ── config ────────────────────────────────────────────────────────────────────
 
-MODEL_PATH   = PROJECT_ROOT / "models/Qwen3.5-9B"
-LOAD_IN_4BIT = True
+MODEL_PATH      = PROJECT_ROOT / "models/Qwen3.5-9B"
+LOAD_IN_4BIT    = True
+RESULTS_JSON    = PROJECT_ROOT / "images/results/pipeline_results.json"
 
-# cases to run through the visual pipeline before VLM decision
-VLM_TEST_CASES = [
-    {
-        "instruction": "pick up the cup",
-        "image_path":  PROJECT_ROOT / "images/cup3.jpg",
-    },
+# subset of instructions to run VLM on (None = run all from JSON)
+VLM_FILTER: Optional[List[str]] = [
+    "pick up the cup",
 ]
 
 
-# ── single VLM case ───────────────────────────────────────────────────────────
+# ── single case ───────────────────────────────────────────────────────────────
 
-def run_vlm_case(
-    pipeline_result: Dict,
-    decider:         VLMDecider,
-) -> Optional[Dict]:
-    """Run VLM constraint decision for one pipeline result."""
-    instruction  = pipeline_result["instruction"]
-    image        = pipeline_result["image"]
-    keypoints_2d = pipeline_result["keypoints_2d"]
-    mode         = pipeline_result["mode"]
+def run_vlm_case(record: Dict, decider: VLMDecider) -> Dict:
+    """Run VLM decision for one record loaded from pipeline_results.json."""
+    instruction  = record["instruction"]
+    mode         = record["mode"]
+    keypoints_2d = {k: tuple(v) for k, v in record["keypoints_2d"].items()}
+    annotated    = Image.open(record["annotated_path"]).convert("RGB")
 
     kp_str = "  ".join(
         f"{k}=({v[0]:.0f},{v[1]:.0f})" for k, v in keypoints_2d.items()
@@ -60,14 +55,14 @@ def run_vlm_case(
 
     t0 = time.perf_counter()
     decision = decider.decide(
-        rgb_image=image,
+        rgb_image=annotated,
         keypoints_2d=keypoints_2d,
         task_instruction=instruction,
         mode=mode,
     )
     elapsed = time.perf_counter() - t0
 
-    meta = decider.last_inference_meta  # populated by _infer_local()
+    meta = decider.last_inference_meta
 
     if meta:
         print(f"  [vlm]        {elapsed:.3f}s  "
@@ -84,67 +79,56 @@ def run_vlm_case(
     print(f"  is_fallback  : {decision.is_fallback}")
 
     return {
-        "instruction":  instruction,
+        "instruction": instruction,
         "keypoints_2d": keypoints_2d,
-        "decision":     decision,
-        "elapsed":      elapsed,
-        "meta":         meta,
+        "decision":    decision,
+        "elapsed":     elapsed,
+        "meta":        meta,
     }
 
 
 # ── batch runner ──────────────────────────────────────────────────────────────
 
-def run_all_vlm_cases() -> List[Optional[Dict]]:
+def run_all_vlm_cases() -> List[Dict]:
     print("=" * 70)
     print("Experiment 2: VLM Constraint Decision")
     print("=" * 70)
-    print(f"  {len(VLM_TEST_CASES)} case(s) to run\n")
 
-    # step 1: run only the specified cases through the visual pipeline
-    print("-- Visual pipeline (Experiment 1) --")
-    parser    = TaskParser()
-    detector  = GroundingDINODetector()
-    processor = ImageProcessor(output_dir=PROJECT_ROOT / "images/objectlist")
-    segmenter = SAM3Segmenter()
+    # load pipeline results from disk
+    if not RESULTS_JSON.exists():
+        print(f"ERROR: {RESULTS_JSON} not found.")
+        print("Run Experiment 1 first: python test/test_visual_pipeline.py")
+        return []
 
-    pipeline_results = []
-    for case in VLM_TEST_CASES:
-        result = run_single_case(
-            instruction=case["instruction"],
-            image_path=case["image_path"],
-            parser=parser,
-            detector=detector,
-            processor=processor,
-            segmenter=segmenter,
-            detection_prompt=case.get("detection_prompt"),
-        )
-        pipeline_results.append(result)
+    with open(RESULTS_JSON) as f:
+        records = json.load(f)
 
-    passed = [r for r in pipeline_results if r is not None]
-    print(f"\n  visual pipeline: {len(passed)}/{len(VLM_TEST_CASES)} passed")
+    # filter by instruction if VLM_FILTER is set
+    if VLM_FILTER is not None:
+        records = [r for r in records if r["instruction"] in VLM_FILTER]
 
-    # step 2: load VLM once
-    print("\n-- Loading VLMDecider --")
+    print(f"  {len(records)} case(s) loaded from {RESULTS_JSON.name}\n")
+
+    # load VLM
+    print("-- Loading VLMDecider --")
     decider = VLMDecider(
         model_path=str(MODEL_PATH),
         load_in_4bit=LOAD_IN_4BIT,
     )
 
-    # step 3: VLM decision for each successful pipeline result
+    # run decisions
     print("\n-- VLM decisions --")
     vlm_results = []
-    for i, result in enumerate(passed, 1):
-        print(f"\n[{i}/{len(passed)}]")
-        vlm_result = run_vlm_case(result, decider)
-        vlm_results.append(vlm_result)
+    for i, record in enumerate(records, 1):
+        print(f"\n[{i}/{len(records)}]")
+        result = run_vlm_case(record, decider)
+        vlm_results.append(result)
 
     # summary
     print(f"\n{'=' * 70}")
     print("Experiment 2 Summary")
     print(f"{'=' * 70}")
     for r in vlm_results:
-        if r is None:
-            continue
         d = r["decision"]
         src = "fallback" if d.is_fallback else "VLM"
         print(f"  {r['instruction']!r}")
