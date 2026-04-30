@@ -23,13 +23,21 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from PIL import Image
-from modules.vlmDecider import VLMDecider
+
+# import vlmDecider directly to avoid modules/__init__.py pulling in mujoco/IKSolver
+import importlib.util
+_spec = importlib.util.spec_from_file_location(
+    "vlmDecider", PROJECT_ROOT / "modules/vlmDecider.py"
+)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+VLMDecider = _mod.VLMDecider
 
 # ── config ────────────────────────────────────────────────────────────────────
 
-MODEL_PATH      = PROJECT_ROOT / "models/Qwen3.5-9B"
+MODEL_PATH      = Path("/workspace/models/Qwen3.5-9B")
 LOAD_IN_4BIT    = True
-RESULTS_JSON    = PROJECT_ROOT / "images/results/pipeline_results.json"
+RESULTS_JSON    = Path("/workspace/PartKep/images/results/pipeline_results.json")
 
 # subset of instructions to run VLM on (None = run all from JSON)
 VLM_FILTER: Optional[List[str]] = [
@@ -44,7 +52,12 @@ def run_vlm_case(record: Dict, decider: VLMDecider) -> Dict:
     instruction  = record["instruction"]
     mode         = record["mode"]
     keypoints_2d = {k: tuple(v) for k, v in record["keypoints_2d"].items()}
-    annotated    = Image.open(record["annotated_path"]).convert("RGB")
+    # remap annotated_path to server location (JSON was generated on a different machine)
+    annotated_path = (
+        Path("/workspace/PartKep/images/results") /
+        Path(record["annotated_path"]).name
+    )
+    annotated = Image.open(annotated_path).convert("RGB")
 
     kp_str = "  ".join(
         f"{k}=({v[0]:.0f},{v[1]:.0f})" for k, v in keypoints_2d.items()

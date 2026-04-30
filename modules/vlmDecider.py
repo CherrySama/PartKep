@@ -207,7 +207,7 @@ class VLMDecider:
 
         try:
             import torch
-            from transformers import AutoModelForCausalLM, AutoProcessor
+            from transformers import AutoModelForImageTextToText, AutoProcessor
 
             kwargs = {
                 "device_map":        {"": 0},   # force all layers onto GPU 0
@@ -225,7 +225,7 @@ class VLMDecider:
                 kwargs["torch_dtype"] = torch.bfloat16
 
             t0 = time.time()
-            self.model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
+            self.model = AutoModelForImageTextToText.from_pretrained(model_path, **kwargs)
             self.model.eval()
             self.processor = AutoProcessor.from_pretrained(model_path)
             print(f"VLMDecider: Qwen3.5-9B loaded  "
@@ -287,39 +287,45 @@ class VLMDecider:
         prompt:          str,
         mode:            str,
     ) -> VLMDecision:
-        """Run Qwen3.5-9B inference locally and parse the JSON output."""
+        """Run Qwen3.5-9B inference locally and parse the JSON output.
+
+        Qwen3.5 uses early fusion -- image tokens are embedded directly into
+        input_ids. The correct call pattern is:
+            1. apply_chat_template(..., tokenize=False) -> text string with placeholders
+            2. processor(text=text, images=[pil]) -> fused input_ids
+            3. model.generate(**inputs) -- no separate pixel_values needed
+        """
         import torch
 
-        image_b64 = _image_to_base64(annotated_image)
-
-        # Qwen3.5 uses OpenAI-compatible image_url format
+        # build messages with image placeholder (PIL passed separately to processor)
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {
-                        "type":      "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
-                    },
+                    {"type": "image"},
                     {"type": "text", "text": prompt},
                 ],
             }
         ]
 
-        inputs = self.processor.apply_chat_template(
+        # step 1: get text string with image token placeholders
+        text = self.processor.apply_chat_template(
             messages,
-            tokenize=True,
+            tokenize=False,
             add_generation_prompt=True,
-            return_dict=True,
-            return_tensors="pt",
-            # disable thinking mode -- we need clean JSON output
-            chat_template_kwargs={"enable_thinking": False},
+            enable_thinking=False
         )
-        inputs.pop("token_type_ids", None)
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
+        # step 2: processor fuses text + PIL image into input_ids
+        inputs = self.processor(
+            text=text,
+            images=[annotated_image],
+            return_tensors="pt",
+        ).to(self.model.device)
+
+        # step 3: generate -- image is already in input_ids, nothing extra needed
         with torch.no_grad():
-            generated_ids = self.model.generate(
+            output_ids = self.model.generate(
                 **inputs,
                 max_new_tokens=256,
                 do_sample=False,
@@ -327,20 +333,17 @@ class VLMDecider:
                 top_p=None,
             )
 
-        new_ids = [
-            out[len(inp):]
-            for inp, out in zip(inputs["input_ids"], generated_ids)
-        ]
-        raw_text = self.processor.batch_decode(
+        # decode only newly generated tokens
+        new_ids  = output_ids[0][inputs["input_ids"].shape[1]:]
+        raw_text = self.processor.decode(
             new_ids,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
-        )[0]
+        )
 
-        # store quantitative metadata for the test script to read
         self.last_inference_meta = {
-            "input_tokens":  int(inputs["input_ids"].shape[-1]),
-            "output_tokens": int(new_ids[0].shape[-1]),
+            "input_tokens":  int(inputs["input_ids"].shape[1]),
+            "output_tokens": int(new_ids.shape[0]),
             "raw_response":  raw_text,
         }
 

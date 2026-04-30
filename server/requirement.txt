@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+Pillow
+numpy
+transformers
+accelerate
+bitsandbytes
+### for torch you need: pip install torch --index-url https://download.pytorch.org/whl/cu128
