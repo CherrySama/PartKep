@@ -42,7 +42,7 @@
 
     <!-- 杯子（进一步软化接触 + 更高初始位置） -->
     <body name="cup" pos="0.5 0.05 0.46">
-      <freejoint name="cup_free"/>
+      <joint type="free" name="cup_free" damping="0.1"/>
       
       <geom name="cup_body"   type="cylinder" size="0.04 0.05"
             pos="0 0 0"      material="mat_cup"    mass="0.15"
