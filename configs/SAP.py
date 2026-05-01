@@ -154,7 +154,7 @@ SAP_KNOWLEDGE_BASE: Dict[str, 'SAP'] = {
     "handle": SAP(
         part_name="handle",
         approach_direction=np.array([1.0, 0.0, 0.0]),
-        grasp_axis=np.array([0.0, 0.0, 1.0]),
+        grasp_axis=np.array([0.0, 1.0, 0.0]),
         safety_margin=0.0,
         contact_mode='grasp',
         description=(

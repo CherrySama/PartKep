@@ -16,7 +16,7 @@ test/test_pick_pose.py
 import sys
 import numpy as np
 sys.path.insert(0, '.')
-
+import mujoco
 from modules.constraintsInst import ConstraintInstantiator, FINGER_LENGTH
 from modules.poseSolver       import PoseSolver
 from modules.vlmDecider       import VLMDecision
@@ -34,29 +34,12 @@ T_current[:3,  3] = _p_home
 SCENE_XML = "assets/franka_emika_panda/scene.xml"
 
 
-def _read_cup_keypoints(model) -> dict:
-    """
-    从 model 结构读取杯子关键点的初始世界坐标。
-
-    原理：
-        cup body 父节点是 worldbody，故：
-            model.body_pos[cup_id] = XML pos="0.5 0.05 0.452" = 杯子初始世界位置
-            model.site_pos[sid]    = site 在杯子局部坐标系的偏移
-        初始状态杯子无旋转，故：site 世界坐标 = body_pos + site_pos
-
-    注意：仅在杯子处于初始位置时正确。
-    实际 pipeline 中关键点来自视觉模块，与此函数无关。
-    """
-    import mujoco
-    cup_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "cup")
-    cup_pos = model.body_pos[cup_id].copy()   # [0.5, 0.05, 0.452]
-
+def _read_cup_keypoints(model, data) -> dict:
     site_map = {"handle": "kp_handle", "body": "kp_body", "rim": "kp_rim"}
     result = {}
     for key, site_name in site_map.items():
         sid         = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site_name)
-        local_pos   = model.site_pos[sid].copy()
-        result[key] = cup_pos + local_pos
+        result[key] = data.site_xpos[sid].copy()
     return result
 
 
@@ -108,10 +91,11 @@ def main():
     mujoco.mj_forward(model, data)
 
     # ── 1. 从 site 实时读取关键点 ─────────────────────────────
-    CUP_KEYPOINTS = _read_cup_keypoints(model)
+    CUP_KEYPOINTS = _read_cup_keypoints(model, data)
     print(f"\n  kp_handle : {np.round(CUP_KEYPOINTS['handle'], 4)}")
     print(f"  kp_body   : {np.round(CUP_KEYPOINTS['body'],   4)}")
     print(f"  kp_rim    : {np.round(CUP_KEYPOINTS['rim'],    4)}")
+    CUP_KEYPOINTS.pop('handle')
 
     # ── 2. SAP → PoseSolver ──────────────────────────────────
     decision = VLMDecision(
@@ -182,7 +166,7 @@ def main():
     # 直接设置关节角，不做插值（静态验证）
     data.ctrl[:7] = ik_res['q']
     data.ctrl[7]  = 255.0         # 夹爪张开
-    for _ in range(200):
+    for _ in range(1000):
         mujoco.mj_step(model, data)
     viewer.sync()
 

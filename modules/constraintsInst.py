@@ -90,7 +90,7 @@ def _compute_actual_approach(
     Returns:
         shape=(3,) 归一化的接近方向向量
     """
-    LATERAL_PARTS = {"handle", "neck"}
+    LATERAL_PARTS = {"handle", "neck", "body"}
 
     if part_name in LATERAL_PARTS:
         delta_xy = object_center[:2] - keypoint_3d[:2] # 从 handle 指向杯中心，方向向内（从外部接近）
@@ -389,8 +389,12 @@ class ConstraintInstantiator:
         运行完整 SLSQP（200次）筛选最优交互点，返回其代价函数和 x0。
         """
         # 物体中心（所有关键点均值，用于运行时修正接近方向）
-        all_pts       = list(grasp_kps.values()) + [v[0] for v in avoid_kps.values()]
-        object_center = np.mean(np.stack(all_pts), axis=0)
+        avoid_pts = [v[0] for v in avoid_kps.values()]
+        if avoid_pts:
+            object_center = np.mean(np.stack(avoid_pts), axis=0)
+        else:
+            # 没有 avoid 关键点时退回所有关键点均值
+            object_center = np.mean(np.stack(list(grasp_kps.values())), axis=0)
 
         if self.verbose:
             print(f"\n📐 ConstraintInstantiator [pick 模式]")
