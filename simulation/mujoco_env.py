@@ -27,7 +27,7 @@ Q_HOME = np.array([0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853])
 GRIPPER_OPEN  = 255.0
 GRIPPER_CLOSE = 0.0
 
-STEPS_PER_WAYPOINT  = 5      # 每个 waypoint 推进的物理步数
+STEPS_PER_WAYPOINT  = 30      # 每个 waypoint 推进的物理步数
 SLEEP_PER_WAYPOINT  = 0.01   # 每个 waypoint 后 sleep（秒），控制播放速度
 WELD_SETTLE_STEPS   = 50     # weld 激活后稳定物理的步数
 

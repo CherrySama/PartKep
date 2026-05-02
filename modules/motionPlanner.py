@@ -96,11 +96,25 @@ class MotionPlanner:
         q_start:    np.ndarray,
         T_target:   np.ndarray,
         n_restarts: int = 1,
+        q_target:   Optional[np.ndarray] = None,
     ) -> List[np.ndarray]:
         """
         Joint angle waypoints from q_start to T_target.
-        If an IK step fails, the previous q is reused and the step is counted as a failure.
+
+        If q_target is provided, uses joint-space linear interpolation between
+        q_start and q_target (guaranteed smooth and correct endpoint).
+        Otherwise, uses SE3 Cartesian interpolation with per-step IK.
+
+        If an IK step fails (SE3 path), the previous q is reused.
         """
+        if q_target is not None:
+            # joint-space linear interpolation: smooth and exact at both ends
+            waypoints = []
+            for i in range(1, self.n_steps + 1):
+                t = i / self.n_steps
+                waypoints.append((1.0 - t) * q_start + t * q_target)
+            return waypoints
+
         T_start   = self._ik.forward_kinematics(q_start)
         poses     = _interpolate_poses(T_start, T_target, self.n_steps)
         waypoints = []

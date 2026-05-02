@@ -61,9 +61,6 @@ def main():
     for name, pt in kps.items():
         print(f"  {name:8s}: {np.round(pt, 4)}")
 
-    # temporary: force body-only to test IK feasibility
-    # kps.pop('handle')
-
     decision = VLMDecision(
         w_grasp_axis=1.0, w_safety=2.0,
         confidence=0.0, reasoning="test", is_fallback=True
@@ -128,6 +125,60 @@ def main():
 
     input("\npress Enter to close...")
     viewer.close()
+
+    # ── 轨迹规划 + 执行（HOME → pick_above → pick）───────────────
+    from simulation.mujoco_env import MuJoCoEnv
+    from modules.motionPlanner import MotionPlanner
+
+    LIFT_HEIGHT = 0.3  # 保守抬升高度，避免连杆中间构型扫过桌面
+
+    T_pick_above       = T_pick.copy()
+    T_pick_above[2, 3] += LIFT_HEIGHT
+
+    ik_above   = ik.solve(T_pick_above, q_init=ik_res['q'], n_restarts=10)
+    q_pick_above = ik_above['q']
+
+    env     = MuJoCoEnv(scene_xml=SCENE_XML)
+    planner = MotionPlanner(env.model, verbose=True)
+
+    print("\n── 规划 HOME → pick_above ──")
+    wps_1 = planner.plan_to_pose(Q_HOME, T_pick_above, q_target=q_pick_above)
+
+    print(f"\n  wps_1[-1]  (pick_above终点) : {np.round(wps_1[-1], 4)}")
+    print(f"  ik_res['q'] (pick目标构型)  : {np.round(ik_res['q'], 4)}")
+    print("\n── 规划 pick_above → pick ──")
+    # wps_2 = planner.plan_to_pose(wps_1[-1], T_pick)
+    wps_2 = planner.plan_to_pose(wps_1[-1], T_pick, q_target=ik_res['q'])
+
+    # 沿 approach 方向再前进 3cm
+    approach   = meta['approach_direction']           # [0, 1, 0]
+    T_pick_contact       = T_pick.copy()
+    T_pick_contact[:3, 3] += approach * 0.07
+
+    ik_contact = ik.solve(T_pick_contact, q_init=ik_res['q'], n_restarts=10)
+    q_contact  = ik_contact['q']
+
+    print("\n── 规划 pick → contact ──")
+    wps_3 = planner.plan_to_pose(wps_2[-1], T_pick_contact, q_target=q_contact)
+
+    input(f"\n  共 {len(wps_1) + len(wps_2)} waypoints，按 Enter 开始执行...")
+
+    env.execute_trajectory(wps_1)
+    env.execute_trajectory(wps_2)
+    env.execute_trajectory(wps_3)
+
+    hand_id  = env.model.body("hand").id
+    pos_actual = env.data.xpos[hand_id].copy()
+    gz_actual  = env.data.xmat[hand_id].reshape(3, 3)[:, 2].copy()
+    print(f"\n  ik_above['q'] : {np.round(ik_above['q'], 4)}")
+    print(f"  ik_res['q']   : {np.round(ik_res['q'], 4)}")
+    print(f"\n  [物理实际] pick 位置 : {np.round(pos_actual, 4)}")
+    print(f"  [物理实际] pick gz   : {np.round(gz_actual,  3)}")
+    print(f"  [目标]     pick 位置 : {np.round(T_pick[:3, 3], 4)}")
+    print(f"  [目标]     pick gz   : {np.round(T_pick[:3, 2], 3)}")
+
+    input("\n  观察轨迹，按 Enter 关闭...")
+    env.close()
 
 
 if __name__ == "__main__":
