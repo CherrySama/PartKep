@@ -22,7 +22,6 @@ from pathlib import Path
 import requests
 from PIL import Image
 
-# ── config ────────────────────────────────────────────────────────────────────
 
 SERVER_URL    = "http://localhost:8000"
 RESULTS_DIR   = Path("images/results")
@@ -50,17 +49,15 @@ def _check_health():
         raise RuntimeError(f"VLM server not reachable at {SERVER_URL}: {e}")
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
-
 def run():
     print("=" * 60)
     print("VLM Client  --  batch decide")
     print("=" * 60)
 
-    # ── 1. health check ───────────────────────────────────────────
+    # 1. health check 
     _check_health()
 
-    # ── 2. load pipeline results ──────────────────────────────────
+    # 2. load pipeline results 
     if not INPUT_JSON.exists():
         raise FileNotFoundError(
             f"{INPUT_JSON} not found. Run the visual pipeline first."
@@ -70,7 +67,7 @@ def run():
         records = json.load(f)
     print(f"  loaded {len(records)} record(s) from {INPUT_JSON}")
 
-    # ── 3. build batch request ────────────────────────────────────
+    # 3. build batch request 
     items = []
     for rec in records:
         annotated_path = Path(rec["annotated_path"])
@@ -87,7 +84,7 @@ def run():
             "mode":             rec["mode"],
         })
 
-    # ── 4. POST to server ─────────────────────────────────────────
+    # 4. POST to server 
     print(f"  sending {len(items)} item(s) to {SERVER_URL}/decide_batch ...")
     t0 = time.perf_counter()
 
@@ -102,7 +99,7 @@ def run():
     decisions = resp.json()["results"]
     print(f"  received {len(decisions)} decision(s)  ({elapsed:.1f}s total)")
 
-    # ── 5. merge and save ─────────────────────────────────────────
+    # 5. merge and save 
     output = []
     for rec, dec in zip(records, decisions):
         output.append({
@@ -117,8 +114,6 @@ def run():
         json.dump(output, f, indent=2)
     print(f"  saved → {OUTPUT_JSON}")
 
-    # ── 6. summary ────────────────────────────────────────────────
-    print()
     print("  instruction                          src       w_grasp  w_safety  conf")
     print("  " + "-" * 70)
     for entry in output:

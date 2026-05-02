@@ -50,15 +50,15 @@
             margin="0.001"
             contype="1" conaffinity="1"/>
 
-      <geom name="cup_handle" type="box"      size="0.015 0.025 0.035"
-            pos="0.055 0 0"  material="mat_handle" mass="0.01"
+      <geom name="cup_handle" type="box"      size="0.015 0.015 0.035"
+            pos="0 0.055 0"  material="mat_handle" mass="0.01"
             solref="0.03 1"  solimp="0.96 0.99 0.0005"
             margin="0.001"
             contype="1" conaffinity="1"/>
 
-      <site name="kp_handle" pos="0.07 0 0"   size="0.007" rgba="1 0 0 1"/>
-      <site name="kp_body"   pos="0 -0.042 0" size="0.007" rgba="0 1 0 1"/>
-      <site name="kp_rim"    pos="0 0 0.052"  size="0.007" rgba="0 0 1 1"/>
+      <site name="kp_handle" pos="0 0.07 0"   size="0.007" rgba="1 0 0 0"/>
+      <site name="kp_body"   pos="0 -0.042 0" size="0.007" rgba="0 1 0 0"/>
+      <site name="kp_rim"    pos="0 0 0.052"  size="0.007" rgba="0 0 1 0"/>
     </body>
 
     <!-- 托盘 -->

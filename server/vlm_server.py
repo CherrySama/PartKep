@@ -29,13 +29,11 @@ from PIL import Image
 import base64
 from io import BytesIO
 
-# ── config ────────────────────────────────────────────────────────────────────
 
 MODEL_PATH   = "/workspace/models/Qwen3.5-9B"
 LOAD_IN_4BIT = True
 PORT         = 8000
 
-# ── app ───────────────────────────────────────────────────────────────────────
 
 app     = FastAPI()
 decider = None   # loaded on startup
@@ -48,8 +46,6 @@ def load_model():
     decider = VLMDecider(model_path=MODEL_PATH, load_in_4bit=LOAD_IN_4BIT)
     print("VLMDecider ready.")
 
-
-# ── request / response schema ─────────────────────────────────────────────────
 
 class DecideRequest(BaseModel):
     image_b64:        str             # JPEG image encoded as base64
@@ -65,8 +61,6 @@ class DecideResponse(BaseModel):
     reasoning:    str
     is_fallback:  bool
 
-
-# ── endpoint ──────────────────────────────────────────────────────────────────
 
 @app.post("/decide", response_model=DecideResponse)
 def decide(req: DecideRequest):
@@ -93,8 +87,6 @@ def decide(req: DecideRequest):
 def health():
     return {"status": "ok", "model_loaded": decider is not None}
 
-
-# ── batch endpoint ────────────────────────────────────────────────────────────
 
 class BatchDecideRequest(BaseModel):
     items: List[DecideRequest]
@@ -129,8 +121,6 @@ def decide_batch(req: BatchDecideRequest):
 
     return BatchDecideResponse(results=results)
 
-
-# ── main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)

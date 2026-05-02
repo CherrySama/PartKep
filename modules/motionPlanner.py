@@ -1,47 +1,42 @@
 """
-modules/motionPlanner.py
+Created by Yinghao Ho on 2026-2-23
 
-轨迹规划器（SE3 插值 + MuJoCo-native IK）
+Trajectory planner: SE3 interpolation + MuJoCo-native IK.
 
-plan_pick_place 返回段结构（List[Dict]），每段含：
-    'label'       : str，段名称
-    'waypoints'   : List[np.ndarray]，关节角序列
-    'post_actions': List[str]，段结束后触发的动作
+plan_pick_place returns a list of segment dicts, each with:
+    'label'       : str, segment name
+    'waypoints'   : List[np.ndarray], joint angle sequence
+    'post_actions': List[str], actions triggered at segment end
 
-支持的 post_actions：
-    'close_gripper'   → MuJoCoEnv._set_gripper(False)
-    'activate_weld'   → MuJoCoEnv._set_weld(True)
-    'open_gripper'    → MuJoCoEnv._set_gripper(True)
-    'deactivate_weld' → MuJoCoEnv._set_weld(False)
+Supported post_actions:
+    'close_gripper'   -> MuJoCoEnv._set_gripper(False)
+    'activate_weld'   -> MuJoCoEnv._set_weld(True)
+    'open_gripper'    -> MuJoCoEnv._set_gripper(True)
+    'deactivate_weld' -> MuJoCoEnv._set_weld(False)
 
-完整 pick-place 运动序列：
-    HOME → pick_above → pick
-        [close_gripper, activate_weld]（weld 激活后物理稳定 50 步）
-    pick → pick_above → place_above → place
-        [open_gripper, deactivate_weld]
-    place → HOME
+Full pick-place motion sequence:
+    HOME -> pick_above -> pick   [close_gripper, activate_weld]
+    pick -> pick_above -> place_above -> place   [open_gripper, deactivate_weld]
+    place -> HOME
 """
+
+from typing import List, Dict, Optional
 
 import numpy as np
 import mujoco
 from scipy.spatial.transform import Rotation, Slerp
-from typing import List, Dict, Optional
 
 from modules.IKSolver import IKSolver, Q_HOME
 
 
-# ── 常量 ──────────────────────────────────────────────────────────────────────
-
-N_STEPS_PER_SEGMENT = 100   # 每段插值步数
-LIFT_HEIGHT         = 0.15  # pick/place 上方抬升高度（米）
+N_STEPS_PER_SEGMENT = 100   # interpolation steps per segment
+LIFT_HEIGHT         = 0.15  # lift height above pick/place target (metres)
 EE_BODY_NAME        = "hand"
 
 
-# ── 辅助函数 ──────────────────────────────────────────────────────────────────
-
 def _lift_T(T: np.ndarray, dz: float) -> np.ndarray:
-    """世界坐标系 Z 方向平移，旋转不变"""
-    T_lifted      = T.copy()
+    """Translate T by dz along world Z, rotation unchanged."""
+    T_lifted = T.copy()
     T_lifted[2, 3] += dz
     return T_lifted
 
@@ -50,9 +45,8 @@ def _interpolate_poses(T_start: np.ndarray,
                        T_end:   np.ndarray,
                        n_steps: int) -> List[np.ndarray]:
     """
-    SE3 插值：位置线性 + 旋转 SLERP
-
-    返回 n_steps 个位姿，t ∈ (0, 1]（不含起点，含终点）
+    SE3 interpolation: linear position + SLERP rotation.
+    Returns n_steps poses at t in (0, 1] (start excluded, end included).
     """
     p_start = T_start[:3, 3]
     p_end   = T_end[:3, 3]
@@ -65,21 +59,19 @@ def _interpolate_poses(T_start: np.ndarray,
         t = i / n_steps
         p = (1.0 - t) * p_start + t * p_end
         R = slerp(t).as_matrix()
-        T       = np.eye(4)
+        T = np.eye(4)
         T[:3, :3] = R
         T[:3,  3] = p
         poses.append(T)
     return poses
 
 
-# ── 主类 ──────────────────────────────────────────────────────────────────────
-
 class MotionPlanner:
     """
-    轨迹规划器（SE3 插值 + MuJoCo-native IK）
+    Trajectory planner: SE3 interpolation + MuJoCo-native IK.
 
-    plan_to_pose   → List[np.ndarray]（平铺 waypoints，用于单段）
-    plan_pick_place → List[Dict]（段结构，用于完整 pick-place）
+    plan_to_pose    -> List[np.ndarray], flat waypoint list for a single segment.
+    plan_pick_place -> List[Dict], full segment structure for pick-place.
     """
 
     def __init__(
@@ -96,14 +88,8 @@ class MotionPlanner:
         self._ik         = IKSolver(model, verbose=False)
 
         if verbose:
-            print("=" * 55)
-            print("初始化 MotionPlanner（SE3 插值 + MuJoCo IK）")
-            print(f"  末端帧  : {EE_BODY_NAME} (body)")
-            print(f"  每段步数: {n_steps}")
-            print(f"  抬升高度: {lift_height * 100:.0f} cm")
-            print("=" * 55)
-
-    # ── 公开接口 ──────────────────────────────────────────────────────────────
+            print(f"[MotionPlanner] ee={EE_BODY_NAME}  "
+                  f"steps/seg={n_steps}  lift={lift_height * 100:.0f}cm")
 
     def plan_to_pose(
         self,
@@ -112,35 +98,26 @@ class MotionPlanner:
         n_restarts: int = 1,
     ) -> List[np.ndarray]:
         """
-        从 q_start 到 T_target 的关节角 waypoints
-
-        Args:
-            q_start:    shape=(7,) 起始关节角
-            T_target:   shape=(4,4) 目标末端位姿
-            n_restarts: IK 随机重启次数
-
-        Returns:
-            List[np.ndarray]，每个 shape=(7,)
+        Joint angle waypoints from q_start to T_target.
+        If an IK step fails, the previous q is reused and the step is counted as a failure.
         """
-        T_start    = self._ik.forward_kinematics(q_start)
-        poses      = _interpolate_poses(T_start, T_target, self.n_steps)
-        waypoints  = []
-        q_current  = q_start.copy()
+        T_start   = self._ik.forward_kinematics(q_start)
+        poses     = _interpolate_poses(T_start, T_target, self.n_steps)
+        waypoints = []
+        q_current = q_start.copy()
         n_failures = 0
 
         for T_interp in poses:
-            result = self._ik.solve(T_interp, q_init=q_current,
-                                    n_restarts=n_restarts)
-            # ← 修复：用 success 而非 within_limits
-            if result['success']:
+            result = self._ik.solve(T_interp, q_init=q_current, n_restarts=n_restarts)
+            if result['success']:  # use 'success', not 'within_limits'
                 q_current = result['q']
             else:
                 n_failures += 1
             waypoints.append(q_current.copy())
 
         if n_failures > 0:
-            print(f"  ⚠️  plan_to_pose: {n_failures}/{self.n_steps} 步 IK 失败，"
-                  f"已沿用上一步配置")
+            print(f"[MotionPlanner] plan_to_pose: {n_failures}/{self.n_steps} IK steps failed, "
+                  f"previous q reused")
         return waypoints
 
     def plan_pick_place(
@@ -151,18 +128,9 @@ class MotionPlanner:
         n_restarts: int = 10,
     ) -> List[Dict]:
         """
-        完整 pick-place 段结构
-
-        运动序列：
-            HOME → pick_above → pick
-            pick → pick_above → place_above → place
-            place → HOME
-
-        Returns:
-            List[Dict]，每个 Dict：
-                'label'       : str
-                'waypoints'   : List[np.ndarray shape=(7,)]
-                'post_actions': List[str]
+        Full pick-place segment structure.
+        Motion sequence: HOME -> pick_above -> pick -> pick_above -> place_above -> place -> HOME.
+        Returns List[Dict] with keys: label, waypoints, post_actions.
         """
         if q_home is None:
             q_home = Q_HOME.copy()
@@ -172,19 +140,16 @@ class MotionPlanner:
         T_home        = self._ik.forward_kinematics(q_home)
 
         if self.verbose:
-            print("\n📐 MotionPlanner 规划 pick-place 序列")
-            print(f"  pick  位置: {np.round(T_pick[:3, 3], 3)}")
-            print(f"  place 位置: {np.round(T_place[:3, 3], 3)}")
+            print(f"[MotionPlanner] pick={np.round(T_pick[:3, 3], 3)}  "
+                  f"place={np.round(T_place[:3, 3], 3)}")
 
-        # 段定义：(label, T_target, post_actions)
-        # q_start 由上一段末尾的 q 自动传递
         segment_defs = [
-            ("home→pick_above",        T_pick_above,  []),
-            ("pick_above→pick",         T_pick,        ['close_gripper', 'activate_weld']),
-            ("pick→pick_above",         T_pick_above,  []),
-            ("pick_above→place_above",  T_place_above, []),
-            ("place_above→place",       T_place,       ['open_gripper', 'deactivate_weld']),
-            ("place→home",              T_home,        []),
+            ("home->pick_above",       T_pick_above,  []),
+            ("pick_above->pick",        T_pick,        ['close_gripper', 'activate_weld']),
+            ("pick->pick_above",        T_pick_above,  []),
+            ("pick_above->place_above", T_place_above, []),
+            ("place_above->place",      T_place,       ['open_gripper', 'deactivate_weld']),
+            ("place->home",             T_home,        []),
         ]
 
         segments  = []
@@ -201,11 +166,11 @@ class MotionPlanner:
 
             if self.verbose:
                 pos_final = self._ik.forward_kinematics(q_current)[:3, 3]
-                pa_str    = f"  → {post_actions}" if post_actions else ""
-                print(f"  ✅ [{label}]  末端: {np.round(pos_final, 3)}{pa_str}")
+                pa_str    = f"  -> {post_actions}" if post_actions else ""
+                print(f"[MotionPlanner] [{label}] tcp={np.round(pos_final, 3)}{pa_str}")
 
         total = sum(len(s['waypoints']) for s in segments)
         if self.verbose:
-            print(f"  总 waypoints: {total}（{len(segments)} 段）")
+            print(f"[MotionPlanner] total waypoints={total} ({len(segments)} segments)")
 
         return segments
