@@ -118,14 +118,16 @@ class IKSolver:
 
         T_warm         = self.forward_kinematics(q_warm)
         err_warm       = float(np.linalg.norm(T_warm[:3, 3] - p_target))
+        rot_err_warm   = float(np.linalg.norm(T_warm[:3, :3] - R_target, 'fro'))
         in_limits_warm = bool(np.all(
             (q_warm >= PANDA_JOINT_LIMITS[:, 0]) &
             (q_warm <= PANDA_JOINT_LIMITS[:, 1])
         ))
         best = {
-            'success':        (err_warm < 0.005) and in_limits_warm,
+            'success':        (err_warm < 0.005) and (rot_err_warm < 0.1) and in_limits_warm,
             'q':              q_warm,
             'position_error': err_warm,
+            'rotation_error': rot_err_warm,
             'within_limits':  in_limits_warm,
             'fk_position':    T_warm[:3, 3],
         }
@@ -151,21 +153,28 @@ class IKSolver:
             q7_result = res.x
             T_fk      = self.forward_kinematics(q7_result)
             pos_err   = float(np.linalg.norm(T_fk[:3, 3] - p_target))
+            rot_err   = float(np.linalg.norm(T_fk[:3, :3] - R_target, 'fro'))
             in_limits = bool(np.all(
                 (q7_result >= PANDA_JOINT_LIMITS[:, 0]) &
                 (q7_result <= PANDA_JOINT_LIMITS[:, 1])
             ))
-            success = (pos_err < 0.005) and in_limits
+            success = (pos_err < 0.005) and (rot_err < 0.1) and in_limits
 
             candidate = {
                 'success':        success,
                 'q':              q7_result,
                 'position_error': pos_err,
+                'rotation_error': rot_err,
                 'within_limits':  in_limits,
                 'fk_position':    T_fk[:3, 3],
             }
 
-            if best is None or pos_err < best['position_error']:
+            # 优先保留成功的候选；同为成功或同为失败时，取综合误差最小的
+            def _score(c):
+                return c['position_error'] * _W_POS + c['rotation_error'] * _W_ROT
+
+            if best is None or (success and not best['success']) or \
+               (success == best['success'] and _score(candidate) < _score(best)):
                 best = candidate
 
             if success:
@@ -176,7 +185,8 @@ class IKSolver:
 
         if self.verbose:
             print(f"[IKSolver] all attempts failed, "
-                  f"best error={best['position_error'] * 1000:.2f} mm  "
+                  f"best pos_err={best['position_error'] * 1000:.2f} mm  "
+                  f"rot_err={best['rotation_error']:.4f}  "
                   f"within_limits={best['within_limits']}")
 
         return best

@@ -58,6 +58,7 @@ def main():
     mujoco.mj_forward(model, data)
 
     kps = read_cup_keypoints(model, data)
+    # kps.pop('body')
     for name, pt in kps.items():
         print(f"  {name:8s}: {np.round(pt, 4)}")
 
@@ -130,7 +131,7 @@ def main():
     from simulation.mujoco_env import MuJoCoEnv
     from modules.motionPlanner import MotionPlanner
 
-    LIFT_HEIGHT = 0.3  # 保守抬升高度，避免连杆中间构型扫过桌面
+    LIFT_HEIGHT = 0.15  # 保守抬升高度，避免连杆中间构型扫过桌面
 
     T_pick_above       = T_pick.copy()
     T_pick_above[2, 3] += LIFT_HEIGHT
@@ -153,7 +154,7 @@ def main():
     # 沿 approach 方向再前进 3cm
     approach   = meta['approach_direction']           # [0, 1, 0]
     T_pick_contact       = T_pick.copy()
-    T_pick_contact[:3, 3] += approach * 0.07
+    T_pick_contact[:3, 3] += approach * 0.05
 
     ik_contact = ik.solve(T_pick_contact, q_init=ik_res['q'], n_restarts=10)
     q_contact  = ik_contact['q']

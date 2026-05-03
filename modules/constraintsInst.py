@@ -335,9 +335,17 @@ class ConstraintInstantiator:
                 mode         = "pick",
             )
 
-            result   = minimize(cost_fn, x0, method='SLSQP',
-                                options={'maxiter': 200, 'ftol': 1e-6, 'disp': False})
-            cost_val = float(result.fun)
+            cost_at_x0 = float(cost_fn(x0))
+            result     = minimize(cost_fn, x0, method='SLSQP',
+                                  options={'maxiter': 200, 'ftol': 1e-6, 'disp': False})
+
+            # 若 optimizer 反而跑偏（局部最优比初始点差），保留初始点
+            if result.fun <= cost_at_x0:
+                cost_val          = float(result.fun)
+                best_x0_candidate = result.x
+            else:
+                cost_val          = cost_at_x0
+                best_x0_candidate = x0
 
             if self.verbose:
                 print(f"  [{part_name}] approach={np.round(approach_dir, 3)} cost={cost_val:.4f}")
@@ -346,7 +354,7 @@ class ConstraintInstantiator:
                 best_cost         = cost_val
                 best_cost_fn      = cost_fn
                 best_breakdown_fn = breakdown_fn
-                best_x0           = result.x
+                best_x0           = best_x0_candidate
                 best_meta_part    = {
                     'part_name':    part_name,
                     'approach_dir': approach_dir,
