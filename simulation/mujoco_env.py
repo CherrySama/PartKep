@@ -21,6 +21,7 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 from typing import List, Dict
+from scipy.spatial.transform import Rotation
 
 Q_HOME = np.array([0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853])
 
@@ -119,7 +120,7 @@ class MuJoCoEnv:
 
         print("  ✅ pick-place 序列执行完成")
 
-    def execute_trajectory(self, waypoints: List[np.ndarray]):
+    def execute_trajectory(self, waypoints: List[np.ndarray], gripper_ctrl: float = GRIPPER_OPEN):
         """
         执行平铺 waypoints（向后兼容，夹爪全程保持张开）
 
@@ -129,7 +130,7 @@ class MuJoCoEnv:
         print(f"\n▶ 执行轨迹  ({len(waypoints)} waypoints)")
         for q in waypoints:
             self.data.ctrl[:7] = q
-            self.data.ctrl[7]  = GRIPPER_OPEN
+            self.data.ctrl[7]  = gripper_ctrl
             for _ in range(STEPS_PER_WAYPOINT):
                 mujoco.mj_step(self.model, self.data)
             self.viewer.sync()
@@ -155,31 +156,47 @@ class MuJoCoEnv:
     # ── 夹爪 & weld 接口 ──────────────────────────────────────────────────────
 
     def _set_gripper(self, open: bool):
-        """
-        设置夹爪开/关
-
-        Args:
-            open: True → 张开（GRIPPER_OPEN），False → 关闭（GRIPPER_CLOSE）
-        """
         self.data.ctrl[7] = GRIPPER_OPEN if open else GRIPPER_CLOSE
-        # 推进几步让夹爪物理到位
-        for _ in range(20):
+        for _ in range(200):
             mujoco.mj_step(self.model, self.data)
-        self.viewer.sync()
+            self.viewer.sync()
+            time.sleep(SLEEP_PER_WAYPOINT)   # 与轨迹执行保持一致
 
     def _set_weld(self, active: bool):
-        """
-        激活/解除 cup_weld equality 约束
-
-        使用 model.equality('cup_weld').id 查找，避免硬编码 index。
-        panda.xml 包含手指 mimic 约束，cup_weld 不在 index 0。
-
-        Args:
-            active: True → 激活约束（杯子跟随手臂），False → 解除
-        """
         weld_id = self.model.equality('cup_weld').id
+        weld_id = self.model.equality('cup_weld').id
+        print(f"eq_data default: {self.model.eq_data[weld_id]}")
+        if active:
+            cup_id  = self.model.body('cup').id
+            hand_id = self.model.body('hand').id
+
+            pos_cup  = self.data.xpos[cup_id].copy()
+            pos_hand = self.data.xpos[hand_id].copy()
+
+            # 用 xquat（MuJoCo 原生 [w,x,y,z]，保证单位四元数）
+            quat_cup  = self.data.xquat[cup_id].copy()   # [w,x,y,z]
+            quat_hand = self.data.xquat[hand_id].copy()  # [w,x,y,z]
+
+            # 转成 scipy 格式 [x,y,z,w]
+            rot_cup  = Rotation.from_quat([quat_cup[1],  quat_cup[2],  quat_cup[3],  quat_cup[0]])
+            rot_hand = Rotation.from_quat([quat_hand[1], quat_hand[2], quat_hand[3], quat_hand[0]])
+
+            # hand 原点在 cup 局部坐标系中的相对位置
+            rel_pos = rot_cup.inv().apply(pos_hand - pos_cup)
+
+            # hand 相对于 cup 的旋转
+            xyzw = (rot_cup.inv() * rot_hand).as_quat()  # [x,y,z,w]
+            wxyz = np.array([xyzw[3], xyzw[0], xyzw[1], xyzw[2]])  # 转为 MuJoCo [w,x,y,z]
+
+            self.model.eq_data[weld_id, 0:3]  = 0.0      # anchor
+            self.model.eq_data[weld_id, 3:6]  = rel_pos  # 相对位置
+            self.model.eq_data[weld_id, 6:10] = wxyz     # 相对四元数
+            print(f"  pos_cup  : {np.round(pos_cup, 4)}")
+            print(f"  pos_hand : {np.round(pos_hand, 4)}")
+            print(f"  rel_pos  : {np.round(self.model.eq_data[weld_id, 3:6], 4)}")
+            print(f"  rel_quat : {np.round(self.model.eq_data[weld_id, 6:10], 4)}")
+
         self.data.eq_active[weld_id] = active
-        # 让约束求解器立即感知状态变化
         mujoco.mj_forward(self.model, self.data)
 
     def _settle(self, n_steps: int):

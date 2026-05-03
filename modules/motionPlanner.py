@@ -34,11 +34,16 @@ LIFT_HEIGHT         = 0.15  # lift height above pick/place target (metres)
 EE_BODY_NAME        = "hand"
 
 
-def _lift_T(T: np.ndarray, dz: float) -> np.ndarray:
-    """Translate T by dz along world Z, rotation unchanged."""
-    T_lifted = T.copy()
-    T_lifted[2, 3] += dz
-    return T_lifted
+def _compute_prepose(T: np.ndarray, approach_dir: np.ndarray, distance: float) -> np.ndarray:
+    """
+    Compute pre-pose by retreating along approach_dir by distance, rotation unchanged.
+
+    For top-down parts (approach=[0,0,-1]): equivalent to lifting by distance along +Z.
+    For lateral parts (approach=[0,-1,0]):  retreats outward along +Y, avoiding obstacles.
+    """
+    T_pre = T.copy()
+    T_pre[:3, 3] = T[:3, 3] - approach_dir * distance
+    return T_pre
 
 
 def _interpolate_poses(T_start: np.ndarray,
@@ -136,34 +141,52 @@ class MotionPlanner:
 
     def plan_pick_place(
         self,
-        T_pick:     np.ndarray,
-        T_place:    np.ndarray,
-        q_home:     Optional[np.ndarray] = None,
-        n_restarts: int = 10,
+        T_pick:             np.ndarray,
+        T_place:            np.ndarray,
+        approach_dir_pick:  np.ndarray,
+        approach_dir_place: np.ndarray = np.array([0.0, 0.0, -1.0]),
+        q_home:             Optional[np.ndarray] = None,
+        n_restarts:         int = 10,
     ) -> List[Dict]:
         """
         Full pick-place segment structure.
         Motion sequence: HOME -> pick_above -> pick -> pick_above -> place_above -> place -> HOME.
+
+        pick_above / place_above are computed by retreating along the respective approach
+        direction, so the pre-pose is always outside the object regardless of approach axis.
+
+        Args:
+            approach_dir_pick:  from meta_pick['approach_direction']
+            approach_dir_place: from meta_place['approach_direction'], defaults to [0,0,-1]
+
         Returns List[Dict] with keys: label, waypoints, post_actions.
         """
         if q_home is None:
             q_home = Q_HOME.copy()
 
-        T_pick_above  = _lift_T(T_pick,  self.lift_height)
-        T_place_above = _lift_T(T_place, self.lift_height)
+        T_pick_above  = _compute_prepose(T_pick,  approach_dir_pick,  self.lift_height)
+        T_place_above = _compute_prepose(T_place, approach_dir_place, self.lift_height)
         T_home        = self._ik.forward_kinematics(q_home)
+
+        # safe_above: pick_above position but at home Z height.
+        # Ensures HOME -> safe_above only changes XY/rotation while staying high,
+        # then safe_above -> pick_above descends vertically outside the object.
+        safe_z        = T_home[2, 3]
+        T_safe_above  = T_pick_above.copy()
+        T_safe_above[2, 3] = max(T_pick_above[2, 3], safe_z)
 
         if self.verbose:
             print(f"[MotionPlanner] pick={np.round(T_pick[:3, 3], 3)}  "
                   f"place={np.round(T_place[:3, 3], 3)}")
 
         segment_defs = [
-            ("home->pick_above",       T_pick_above,  []),
-            ("pick_above->pick",        T_pick,        ['close_gripper', 'activate_weld']),
-            ("pick->pick_above",        T_pick_above,  []),
-            ("pick_above->place_above", T_place_above, []),
-            ("place_above->place",      T_place,       ['open_gripper', 'deactivate_weld']),
-            ("place->home",             T_home,        []),
+            ("home->safe_above",       T_safe_above,  []),
+            ("safe_above->pick_above", T_pick_above,  []),
+            ("pick_above->pick",       T_pick,        ['close_gripper', 'activate_weld']),
+            ("pick->pick_above",       T_pick_above,  []),
+            ("pick_above->place_above",T_place_above, []),
+            ("place_above->place",     T_place,       ['open_gripper', 'deactivate_weld']),
+            ("place->home",            T_home,        []),
         ]
 
         segments  = []

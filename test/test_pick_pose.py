@@ -16,6 +16,7 @@ from modules.constraintsInst import ConstraintInstantiator, FINGER_LENGTH
 from modules.poseSolver       import PoseSolver
 from modules.vlmDecider       import VLMDecision
 from modules.IKSolver         import IKSolver, Q_HOME, PANDA_JOINT_LIMITS
+from simulation.mujoco_env import GRIPPER_CLOSE
 
 SCENE_XML = "assets/franka_emika_panda/scene.xml"
 
@@ -58,7 +59,7 @@ def main():
     mujoco.mj_forward(model, data)
 
     kps = read_cup_keypoints(model, data)
-    # kps.pop('body')
+    kps.pop('handle')
     for name, pt in kps.items():
         print(f"  {name:8s}: {np.round(pt, 4)}")
 
@@ -131,30 +132,36 @@ def main():
     from simulation.mujoco_env import MuJoCoEnv
     from modules.motionPlanner import MotionPlanner
 
-    LIFT_HEIGHT = 0.15  # 保守抬升高度，避免连杆中间构型扫过桌面
+    RETREAT_DIST = 0.05  # retreat distance along approach direction for pre-pose
+    SAFE_Z       = 0.62  # minimum Z height during horizontal traversal
 
-    T_pick_above       = T_pick.copy()
-    T_pick_above[2, 3] += LIFT_HEIGHT
+    approach     = meta['approach_direction']
+    T_pick_above = T_pick.copy()
+    T_pick_above[:3, 3] = T_pick[:3, 3] - approach * RETREAT_DIST
 
-    ik_above   = ik.solve(T_pick_above, q_init=ik_res['q'], n_restarts=10)
+    # safe_above: pick_above but Z raised to SAFE_Z if needed.
+    # HOME -> safe_above stays high, then safe_above -> pick_above descends outside the object.
+    T_safe_above = T_pick_above.copy()
+    T_safe_above[2, 3] = max(T_pick_above[2, 3], SAFE_Z)
+
+    ik_safe      = ik.solve(T_safe_above, q_init=Q_HOME,       n_restarts=10)
+    ik_above     = ik.solve(T_pick_above, q_init=ik_safe['q'], n_restarts=10)
+    q_safe_above = ik_safe['q']
     q_pick_above = ik_above['q']
 
     env     = MuJoCoEnv(scene_xml=SCENE_XML)
     planner = MotionPlanner(env.model, verbose=True)
 
-    print("\n── 规划 HOME → pick_above ──")
-    wps_1 = planner.plan_to_pose(Q_HOME, T_pick_above, q_target=q_pick_above)
-
-    print(f"\n  wps_1[-1]  (pick_above终点) : {np.round(wps_1[-1], 4)}")
-    print(f"  ik_res['q'] (pick目标构型)  : {np.round(ik_res['q'], 4)}")
+    print("\n── 规划 HOME → safe_above ──")
+    wps_0 = planner.plan_to_pose(Q_HOME,        T_safe_above, q_target=q_safe_above)
+    print("\n── 规划 safe_above → pick_above ──")
+    wps_1 = planner.plan_to_pose(wps_0[-1],     T_pick_above, q_target=q_pick_above)
     print("\n── 规划 pick_above → pick ──")
-    # wps_2 = planner.plan_to_pose(wps_1[-1], T_pick)
-    wps_2 = planner.plan_to_pose(wps_1[-1], T_pick, q_target=ik_res['q'])
+    wps_2 = planner.plan_to_pose(wps_1[-1],     T_pick,       q_target=ik_res['q'])
 
-    # 沿 approach 方向再前进 3cm
-    approach   = meta['approach_direction']           # [0, 1, 0]
-    T_pick_contact       = T_pick.copy()
-    T_pick_contact[:3, 3] += approach * 0.05
+    # 沿 approach 方向前进 3cm（接触阶段）
+    T_pick_contact        = T_pick.copy()
+    T_pick_contact[:3, 3] += approach * 0.04
 
     ik_contact = ik.solve(T_pick_contact, q_init=ik_res['q'], n_restarts=10)
     q_contact  = ik_contact['q']
@@ -162,11 +169,30 @@ def main():
     print("\n── 规划 pick → contact ──")
     wps_3 = planner.plan_to_pose(wps_2[-1], T_pick_contact, q_target=q_contact)
 
-    input(f"\n  共 {len(wps_1) + len(wps_2)} waypoints，按 Enter 开始执行...")
+    input(f"\n  共 {len(wps_0)+len(wps_1)+len(wps_2)+len(wps_3)} waypoints，按 Enter 开始执行...")
 
+    env.execute_trajectory(wps_0)
     env.execute_trajectory(wps_1)
     env.execute_trajectory(wps_2)
     env.execute_trajectory(wps_3)
+    env._set_gripper(open=False)   # ← 新增：到达 contact 后关闭夹爪
+    print("  夹爪已关闭")
+    env._set_weld(active=True)
+    print("  cup_weld 已激活")
+    env._settle(50) 
+
+    LIFT_DIST    = 0.10
+    T_lift       = T_pick_contact.copy()
+    T_lift[2, 3] += LIFT_DIST
+
+    ik_lift  = ik.solve(T_lift, q_init=q_contact, n_restarts=10)
+    q_lift   = ik_lift['q']
+
+    print("\n── 规划 contact → lift ──")
+    wps_lift = planner.plan_to_pose(wps_3[-1], T_lift, q_target=q_lift)
+
+    input(f"\n  抬起段 {len(wps_lift)} waypoints，按 Enter 开始执行...")
+    env.execute_trajectory(wps_lift, gripper_ctrl=GRIPPER_CLOSE)
 
     hand_id  = env.model.body("hand").id
     pos_actual = env.data.xpos[hand_id].copy()
