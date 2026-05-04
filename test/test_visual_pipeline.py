@@ -1,17 +1,8 @@
 """
-Experiment 1: Visual Pipeline Test
-Tests the full visual pipeline from task instruction to annotated keypoint image.
-
 Pipeline:
     instruction -> TaskParser -> GroundingDINO -> ImageProcessor
                 -> SAM3Segmenter -> build_annotated_image -> save result
-
-Each case returns a structured dict that feeds directly into Experiment 2
-(VLM constraint decision) without re-running the visual pipeline.
-
-Usage:
-    cd /workspace/PartKep
-    python test/test_visual_pipeline.py
+Created by Yinghao Ho on 2026-04-10
 """
 
 import sys

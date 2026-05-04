@@ -1,7 +1,6 @@
 """
-test/test_place_pose.py  —  tray keypoint -> SAP -> PoseSolver -> IK -> static viz
-与 test_pick_pose.py 前半段完全对称，用于独立验证放置姿态。
-run from project root: python test/test_place_pose.py
+tray keypoint -> SAP -> PoseSolver -> IK -> static viz
+Created by Yinghao Ho on 2026-04-19
 """
 
 import sys

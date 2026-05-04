@@ -1,6 +1,6 @@
 """
-test/test_pick_pose.py  —  keypoints -> SAP -> PoseSolver -> IK -> static viz
-run from project root: python test/test_pick_pose.py
+keypoints -> SAP -> PoseSolver -> IK -> static viz
+Created by Yinghao Ho on 2026-04-16
 """
 
 import sys

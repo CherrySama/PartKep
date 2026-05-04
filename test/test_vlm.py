@@ -1,16 +1,5 @@
 """
-Experiment 2: VLM Constraint Decision Test
 Created by Yinghao Ho on 2026-04
-
-Reads pipeline_results.json produced by Experiment 1 (separate process),
-then runs VLMDecider on each case. Keeps visual models and VLM in separate
-processes to avoid VRAM conflicts.
-
-Run Experiment 1 first:
-    python test/test_visual_pipeline.py
-
-Then run this:
-    python test/test_vlm_decider.py
 """
 
 import json
