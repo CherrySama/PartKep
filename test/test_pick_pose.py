@@ -59,7 +59,7 @@ def main():
     mujoco.mj_forward(model, data)
 
     kps = read_cup_keypoints(model, data)
-    kps.pop('handle')
+    # kps.pop('handle')
     for name, pt in kps.items():
         print(f"  {name:8s}: {np.round(pt, 4)}")
 
