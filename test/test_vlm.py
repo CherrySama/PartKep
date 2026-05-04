@@ -38,6 +38,7 @@ VLMDecider = _mod.VLMDecider
 MODEL_PATH      = Path("/workspace/models/Qwen3.5-9B")
 LOAD_IN_4BIT    = True
 RESULTS_JSON    = Path("/workspace/PartKep/images/results/pipeline_results.json")
+OUTPUT_JSON  = Path("/workspace/PartKep/results/vlm_results.json")
 
 # subset of instructions to run VLM on (None = run all from JSON)
 VLM_FILTER: Optional[List[str]] = [
@@ -92,11 +93,12 @@ def run_vlm_case(record: Dict, decider: VLMDecider) -> Dict:
     print(f"  is_fallback  : {decision.is_fallback}")
 
     return {
-        "instruction": instruction,
+        "instruction":  instruction,
+        "mode":         mode,           
         "keypoints_2d": keypoints_2d,
-        "decision":    decision,
-        "elapsed":     elapsed,
-        "meta":        meta,
+        "decision":     decision,
+        "elapsed":      elapsed,
+        "meta":         meta,
     }
 
 
@@ -151,6 +153,26 @@ def run_all_vlm_cases() -> List[Dict]:
         print(f"    reasoning: {d.reasoning}")
     print("=" * 70)
 
+    output = []
+    for r in vlm_results:
+        d = r["decision"]
+        output.append({
+            "instruction":  r["instruction"],
+            "mode":         r["mode"],   
+            "keypoints_2d": {k: list(v) for k, v in r["keypoints_2d"].items()},
+            "decision": {
+                "w_grasp_axis": d.w_grasp_axis,
+                "w_safety":     d.w_safety,
+                "confidence":   d.confidence,
+                "reasoning":    d.reasoning,
+                "is_fallback":  d.is_fallback,
+            },
+        })
+    OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    with open(OUTPUT_JSON, "w") as f:
+        json.dump(output, f, indent=2)
+    print(f"\n  saved → {OUTPUT_JSON}")
+    
     return vlm_results
 
 

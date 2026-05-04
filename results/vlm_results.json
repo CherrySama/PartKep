@@ -1,0 +1,52 @@
+[
+  {
+    "instruction": "pick up the cup",
+    "mode": "pick",
+    "keypoints_2d": {
+      "handle": [
+        91.0,
+        571.0
+      ],
+      "rim": [
+        496.0,
+        336.0
+      ],
+      "body": [
+        495.08390668606927,
+        486.51792199654545
+      ]
+    },
+    "decision": {
+      "w_grasp_axis": 2.5,
+      "w_safety": 2.0,
+      "confidence": 0.95,
+      "reasoning": "The task requires picking up the cup, which is best achieved by grasping the handle laterally while maintaining a safe distance from the rim to avoid spillage.",
+      "is_fallback": false
+    }
+  },
+  {
+    "instruction": "pick up the cup",
+    "mode": "pick",
+    "keypoints_2d": {
+      "handle": [
+        219.0,
+        575.0
+      ],
+      "rim": [
+        333.0,
+        528.0
+      ],
+      "body": [
+        340.84311714944886,
+        579.9841066393233
+      ]
+    },
+    "decision": {
+      "w_grasp_axis": 2.5,
+      "w_safety": 2.0,
+      "confidence": 0.95,
+      "reasoning": "The task requires picking up a cup, which has a handle and rim; high weights are assigned to ensure lateral grasp alignment with the handle and safety distance from the rim.",
+      "is_fallback": false
+    }
+  }
+]
