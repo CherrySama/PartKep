@@ -6,4 +6,4 @@ snapshot_download(
     local_dir_use_symlinks=False,
     token=True
 )
-print("\n✅ 下载完成：models/Qwen3.5-9B")
+print("download complete: models/Qwen3.5-9B")

@@ -1,5 +1,15 @@
 """
+test_vlm.py  —  Experiment 2: VLM Constraint Decision
 Created by Yinghao Ho on 2026-04
+
+Reads pipeline_results.json produced by Experiment 1, runs VLMDecider on
+each case. Kept as a separate process to avoid VRAM conflicts with SAM3.
+
+Run Experiment 1 first:
+    python test/test_visual_pipeline.py
+
+Then run on the server:
+    python test/test_vlm.py
 """
 
 import json
@@ -13,7 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from PIL import Image
 
-# import vlmDecider directly to avoid modules/__init__.py pulling in mujoco/IKSolver
+# Import vlmDecider directly to avoid modules/__init__.py pulling in mujoco/IKSolver
 import importlib.util
 _spec = importlib.util.spec_from_file_location(
     "vlmDecider", PROJECT_ROOT / "modules/vlmDecider.py"
@@ -24,130 +34,104 @@ VLMDecider = _mod.VLMDecider
 
 # ── config ────────────────────────────────────────────────────────────────────
 
-MODEL_PATH      = Path("/workspace/models/Qwen3.5-9B")
-LOAD_IN_4BIT    = True
-RESULTS_JSON    = Path("/workspace/PartKep/images/results/pipeline_results.json")
+MODEL_PATH   = Path("/workspace/models/Qwen3.5-9B")
+LOAD_IN_4BIT = True
+RESULTS_JSON = Path("/workspace/PartKep/images/results/pipeline_results.json")
 OUTPUT_JSON  = Path("/workspace/PartKep/results/vlm_results.json")
 
-# subset of instructions to run VLM on (None = run all from JSON)
+# Set to a list of instruction strings to run only a subset; None = run all
 VLM_FILTER: Optional[List[str]] = [
     "pick up the cup",
 ]
 
-
-# ── single case ───────────────────────────────────────────────────────────────
-
 def run_vlm_case(record: Dict, decider: VLMDecider) -> Dict:
-    """Run VLM decision for one record loaded from pipeline_results.json."""
+    """Run VLM decision for one record from pipeline_results.json."""
     instruction  = record["instruction"]
     mode         = record["mode"]
     keypoints_2d = {k: tuple(v) for k, v in record["keypoints_2d"].items()}
-    # remap annotated_path to server location (JSON was generated on a different machine)
+
+    # remap annotated_path to server location (JSON was written on a different machine)
     annotated_path = (
         Path("/workspace/PartKep/images/results") /
         Path(record["annotated_path"]).name
     )
     annotated = Image.open(annotated_path).convert("RGB")
 
-    kp_str = "  ".join(
-        f"{k}=({v[0]:.0f},{v[1]:.0f})" for k, v in keypoints_2d.items()
-    )
-    print(f"  instruction  : {instruction!r}")
-    print(f"  mode         : {mode}")
-    print(f"  keypoints    : {kp_str}")
+    kp_str = "  ".join(f"{k}=({v[0]:.0f},{v[1]:.0f})" for k, v in keypoints_2d.items())
+    print(f"  {instruction!r}  mode={mode}  kp=[{kp_str}]")
 
-    t0 = time.perf_counter()
+    t0       = time.perf_counter()
     decision = decider.decide(
-        rgb_image=annotated,
-        keypoints_2d=keypoints_2d,
-        task_instruction=instruction,
-        mode=mode,
+        rgb_image        = annotated,
+        keypoints_2d     = keypoints_2d,
+        task_instruction = instruction,
+        mode             = mode,
     )
     elapsed = time.perf_counter() - t0
 
     meta = decider.last_inference_meta
-
     if meta:
-        print(f"  [vlm]        {elapsed:.3f}s  "
-              f"in={meta['input_tokens']}tok  "
-              f"out={meta['output_tokens']}tok")
-        print(f"  raw          : {meta['raw_response']}")
+        print(f"  t={elapsed:.2f}s  in={meta['input_tokens']}tok"
+              f"  out={meta['output_tokens']}tok")
+        print(f"  raw: {meta['raw_response']}")
     else:
-        print(f"  [vlm]        {elapsed:.3f}s  (fallback)")
+        print(f"  t={elapsed:.2f}s  (fallback)")
 
-    print(f"  w_grasp_axis : {decision.w_grasp_axis:.2f}")
-    print(f"  w_safety     : {decision.w_safety:.2f}")
-    print(f"  confidence   : {decision.confidence:.2f}")
-    print(f"  reasoning    : {decision.reasoning}")
-    print(f"  is_fallback  : {decision.is_fallback}")
+    print(f"  w_grasp={decision.w_grasp_axis:.2f}  w_safety={decision.w_safety:.2f}"
+          f"  conf={decision.confidence:.2f}  fallback={decision.is_fallback}")
+    print(f"  reasoning: {decision.reasoning}")
 
     return {
         "instruction":  instruction,
-        "mode":         mode,           
+        "mode":         mode,
         "keypoints_2d": keypoints_2d,
         "decision":     decision,
         "elapsed":      elapsed,
         "meta":         meta,
     }
 
-
-# ── batch runner ──────────────────────────────────────────────────────────────
-
 def run_all_vlm_cases() -> List[Dict]:
-    print("=" * 70)
+    print("=" * 60)
     print("Experiment 2: VLM Constraint Decision")
-    print("=" * 70)
+    print("=" * 60)
 
-    # load pipeline results from disk
     if not RESULTS_JSON.exists():
         print(f"ERROR: {RESULTS_JSON} not found.")
-        print("Run Experiment 1 first: python test/test_visual_pipeline.py")
+        print("Run test/test_visual_pipeline.py first.")
         return []
 
     with open(RESULTS_JSON) as f:
         records = json.load(f)
 
-    # filter by instruction if VLM_FILTER is set
     if VLM_FILTER is not None:
         records = [r for r in records if r["instruction"] in VLM_FILTER]
+    print(f"{len(records)} case(s) loaded\n")
 
-    print(f"  {len(records)} case(s) loaded from {RESULTS_JSON.name}\n")
+    decider = VLMDecider(model_path=str(MODEL_PATH), load_in_4bit=LOAD_IN_4BIT)
 
-    # load VLM
-    print("-- Loading VLMDecider --")
-    decider = VLMDecider(
-        model_path=str(MODEL_PATH),
-        load_in_4bit=LOAD_IN_4BIT,
-    )
-
-    # run decisions
-    print("\n-- VLM decisions --")
     vlm_results = []
     for i, record in enumerate(records, 1):
-        print(f"\n[{i}/{len(records)}]")
+        print(f"[{i}/{len(records)}]")
         result = run_vlm_case(record, decider)
         vlm_results.append(result)
 
     # summary
-    print(f"\n{'=' * 70}")
-    print("Experiment 2 Summary")
-    print(f"{'=' * 70}")
+    print(f"\n{'=' * 60}")
     for r in vlm_results:
-        d = r["decision"]
+        d   = r["decision"]
         src = "fallback" if d.is_fallback else "VLM"
-        print(f"  {r['instruction']!r}")
-        print(f"    src={src}  w_grasp={d.w_grasp_axis:.2f}  "
-              f"w_safety={d.w_safety:.2f}  conf={d.confidence:.2f}  "
-              f"time={r['elapsed']:.3f}s")
-        print(f"    reasoning: {d.reasoning}")
-    print("=" * 70)
+        print(f"  {r['instruction']!r}  [{src}]"
+              f"  w_grasp={d.w_grasp_axis:.2f}  w_safety={d.w_safety:.2f}"
+              f"  conf={d.confidence:.2f}  t={r['elapsed']:.2f}s")
+    print("=" * 60)
 
+    # save results
     output = []
     for r in vlm_results:
         d = r["decision"]
         output.append({
             "instruction":  r["instruction"],
-            "mode":         r["mode"],   
+            "mode":         r["mode"],
             "keypoints_2d": {k: list(v) for k, v in r["keypoints_2d"].items()},
             "decision": {
                 "w_grasp_axis": d.w_grasp_axis,
@@ -160,8 +144,8 @@ def run_all_vlm_cases() -> List[Dict]:
     OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_JSON, "w") as f:
         json.dump(output, f, indent=2)
-    print(f"\n  saved → {OUTPUT_JSON}")
-    
+    print(f"Saved: {OUTPUT_JSON}")
+
     return vlm_results
 
 

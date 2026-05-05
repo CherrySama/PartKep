@@ -69,8 +69,6 @@ class VLMDecision:
 CONFIDENCE_THRESHOLD = 0.3
 
 
-# ── annotated image ───────────────────────────────────────────────────────────
-
 # fixed colours per part name for consistent visualisation
 _PART_COLORS: Dict[str, str] = {
     "handle":  "#FF4444",
@@ -113,8 +111,6 @@ def _image_to_base64(image: Image.Image) -> str:
     image.save(buf, format="JPEG", quality=90)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-
-# ── prompt builder ────────────────────────────────────────────────────────────
 
 def _build_vlm_prompt(
     task_instruction: str,
@@ -168,8 +164,6 @@ Respond with a single JSON object only. No explanation outside the JSON.
 }}
 """
 
-
-# ── VLMDecider ────────────────────────────────────────────────────────────────
 
 class VLMDecider:
     """Loads Qwen3.5-9B locally and decides constraint weights from scene + instruction.
@@ -236,8 +230,6 @@ class VLMDecider:
             logger.warning(f"VLMDecider: model load failed ({e}) -- fallback only")
             self.model = None
 
-    # ── public interface ──────────────────────────────────────────────────────
-
     def decide(
         self,
         rgb_image:        Image.Image,
@@ -278,8 +270,6 @@ class VLMDecider:
         keypoints_2d: Dict[str, Tuple[float, float]],
     ) -> Image.Image:
         return build_annotated_image(rgb_image, keypoints_2d)
-
-    # ── private: local inference ──────────────────────────────────────────────
 
     def _infer_local(
         self,
@@ -349,8 +339,6 @@ class VLMDecider:
 
         return self._parse_vlm_response(raw_text, mode)
 
-    # ── private: response parsing ─────────────────────────────────────────────
-
     def _parse_vlm_response(self, raw_text: str, mode: str) -> VLMDecision:
         """Parse raw VLM text into a VLMDecision.
 
@@ -394,8 +382,6 @@ class VLMDecider:
             is_fallback  = False,
         )
 
-    # ── private: fallback ─────────────────────────────────────────────────────
-
     def _rule_based_fallback(self, mode: str) -> VLMDecision:
         """Conservative default weights derived from SAP contact modes."""
         if mode == "place":
@@ -410,8 +396,6 @@ class VLMDecider:
             is_fallback=True,
         )
 
-
-# ── module test ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("Testing VLMDecider (fallback mode, no model load)")

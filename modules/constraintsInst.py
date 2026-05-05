@@ -227,20 +227,6 @@ def _build_cost_fn(
     return cost_fn, cost_breakdown_fn
 
 def compute_place_pose(T_pick: np.ndarray, surface_point: np.ndarray) -> np.ndarray:
-    """
-    根据 pick 姿态和托盘放置点，直接推导 place 时的夹爪位姿。
-
-    原则：pick 时夹爪是什么姿态，place 时保持一致，只移动位置。
-    旋转：直接复用 T_pick[:3,:3]。
-    位置：surface_point 沿夹爪 gz（T_pick[:3,2]）方向退后 FINGER_LENGTH。
-
-    Args:
-        T_pick        : shape=(4,4)，pick 时夹爪世界位姿
-        surface_point : shape=(3,)，托盘放置目标点世界坐标
-
-    Returns:
-        T_place : shape=(4,4)，place 时夹爪世界位姿
-    """
     T_place = T_pick.copy()
     T_place[:3, 3] = surface_point - T_pick[:3, 2] * FINGER_LENGTH
     return T_place
@@ -357,7 +343,6 @@ class ConstraintInstantiator:
             result     = minimize(cost_fn, x0, method='SLSQP',
                                   options={'maxiter': 200, 'ftol': 1e-6, 'disp': False})
 
-            # 若 optimizer 反而跑偏（局部最优比初始点差），保留初始点
             if result.fun <= cost_at_x0:
                 cost_val          = float(result.fun)
                 best_x0_candidate = result.x

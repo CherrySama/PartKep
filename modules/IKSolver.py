@@ -169,7 +169,6 @@ class IKSolver:
                 'fk_position':    T_fk[:3, 3],
             }
 
-            # 优先保留成功的候选；同为成功或同为失败时，取综合误差最小的
             def _score(c):
                 return c['position_error'] * _W_POS + c['rotation_error'] * _W_ROT
 
@@ -191,26 +190,3 @@ class IKSolver:
 
         return best
 
-
-if __name__ == "__main__":
-    sys.path.insert(0, '.')
-
-    SCENE_XML = "assets/franka_emika_panda/scene.xml"
-    model = mujoco.MjModel.from_xml_path(SCENE_XML)
-    ik    = IKSolver(model, verbose=True)
-
-    T0 = ik.forward_kinematics(Q_HOME)
-    print(f"home TCP: {np.round(T0[:3, 3], 4)}")
-
-    result = ik.solve(T0, q_init=Q_HOME, n_restarts=10)
-    assert result['position_error'] < 0.001, \
-        f"round-trip error too large: {result['position_error'] * 1000:.2f} mm"
-    print(f"round-trip error: {result['position_error'] * 1000:.3f} mm")
-
-    R_pick = Rotation.from_rotvec([1.057, 1.4206, 1.4206]).as_matrix()
-    T_pick = np.eye(4)
-    T_pick[:3, :3] = R_pick
-    T_pick[:3,  3] = [0.4713, 0.0204, 0.45]
-    result2 = ik.solve(T_pick, q_init=Q_HOME, n_restarts=10)
-    print(f"T_pick error={result2['position_error'] * 1000:.2f} mm  "
-          f"success={result2['success']}  within_limits={result2['within_limits']}")
