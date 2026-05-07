@@ -1,6 +1,6 @@
 """
 simulation/mujoco_env.py
-Created by Yinghao Ho on 2026-04-19                    : reset to home configuration
+Created by Yinghao Ho on 2026-04-19
 """
 
 import time
@@ -15,9 +15,9 @@ Q_HOME = np.array([0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853])
 GRIPPER_OPEN  = 255.0
 GRIPPER_CLOSE = 0.0
 
-STEPS_PER_WAYPOINT  = 30      # physics steps advanced per waypoint
-SLEEP_PER_WAYPOINT  = 0.01   # sleep (s) after each waypoint
-WELD_SETTLE_STEPS   = 50     # physics steps after weld activation
+STEPS_PER_WAYPOINT = 30
+SLEEP_PER_WAYPOINT = 0.01
+WELD_SETTLE_STEPS  = 50
 
 
 class MuJoCoEnv:
@@ -50,15 +50,11 @@ class MuJoCoEnv:
 
         print(f"[MuJoCoEnv] home config: {np.round(Q_HOME, 4)}")
 
+    # ── execution ─────────────────────────────────────────────────────────────
+
     def execute_pick_place(self, segments: List[Dict]):
         """
         Execute a full pick-place segment sequence.
-
-        post_actions triggered after each segment:
-            'close_gripper'   -> close gripper
-            'activate_weld'   -> activate cup_weld + settle WELD_SETTLE_STEPS steps
-            'open_gripper'    -> open gripper
-            'deactivate_weld' -> deactivate cup_weld
 
         Args:
             segments: output of MotionPlanner.plan_pick_place(),
@@ -80,7 +76,6 @@ class MuJoCoEnv:
                 self.viewer.sync()
                 time.sleep(SLEEP_PER_WAYPOINT)
 
-            # trigger post_actions after segment completes
             for action in post_actions:
                 if action == 'close_gripper':
                     self._set_gripper(open=False)
@@ -97,7 +92,7 @@ class MuJoCoEnv:
 
     def execute_trajectory(self, waypoints: List[np.ndarray], gripper_ctrl: float = GRIPPER_OPEN):
         """
-        Execute flat waypoints (legacy, gripper stays open throughout).
+        Execute flat waypoints (gripper stays constant throughout).
 
         Args:
             waypoints   : List[np.ndarray], each shape=(7,)
@@ -112,6 +107,8 @@ class MuJoCoEnv:
             self.viewer.sync()
             time.sleep(SLEEP_PER_WAYPOINT)
 
+    # ── public interface ──────────────────────────────────────────────────────
+
     def get_site_xpos(self, site_name: str) -> np.ndarray:
         """Return world position of the named site."""
         mujoco.mj_forward(self.model, self.data)
@@ -119,13 +116,15 @@ class MuJoCoEnv:
         return self.data.site_xpos[site_id].copy()
 
     def reset(self):
-        """Reset to home configuration and restore cup position."""
+        """Reset to home configuration and restore object position."""
         self._reset_state()
         self.move_to(Q_HOME, label="home")
 
     def close(self):
         """Close the viewer."""
         self.viewer.close()
+
+    # ── gripper & weld ────────────────────────────────────────────────────────
 
     def _set_gripper(self, open: bool):
         self.data.ctrl[7] = GRIPPER_OPEN if open else GRIPPER_CLOSE
@@ -135,32 +134,52 @@ class MuJoCoEnv:
             time.sleep(SLEEP_PER_WAYPOINT)
 
     def _set_weld(self, active: bool):
-        weld_id = self.model.equality('cup_weld').id
-        if active:
-            cup_id  = self.model.body('cup').id
-            hand_id = self.model.body('hand').id
+        """
+        Activate or deactivate the weld constraint between the manipulated object
+        and the hand. The weld and object body are discovered dynamically by
+        scanning model equalities — no object name is hardcoded.
+        """
+        hand_id = self.model.body('hand').id
 
-            pos_cup  = self.data.xpos[cup_id].copy()
+        # find the weld constraint that involves 'hand'
+        weld_id = None
+        for i in range(self.model.neq):
+            if self.model.eq_type[i] == mujoco.mjtEq.mjEQ_WELD:
+                if self.model.eq_obj1id[i] == hand_id or self.model.eq_obj2id[i] == hand_id:
+                    weld_id = i
+                    break
+
+        if weld_id is None:
+            print("[weld] no weld constraint involving 'hand' found")
+            return
+
+        if active:
+            # infer object body: the weld endpoint that is not 'hand'
+            b1     = self.model.eq_obj1id[weld_id]
+            b2     = self.model.eq_obj2id[weld_id]
+            obj_id = b2 if b1 == hand_id else b1
+
+            pos_obj  = self.data.xpos[obj_id].copy()
             pos_hand = self.data.xpos[hand_id].copy()
 
-            # xquat: MuJoCo native [w,x,y,z], guaranteed unit quaternion
-            quat_cup  = self.data.xquat[cup_id].copy()   # [w,x,y,z]
-            quat_hand = self.data.xquat[hand_id].copy()  # [w,x,y,z]
+            # xquat: MuJoCo native [w,x,y,z]
+            quat_obj  = self.data.xquat[obj_id].copy()
+            quat_hand = self.data.xquat[hand_id].copy()
 
             # convert to scipy [x,y,z,w]
-            rot_cup  = Rotation.from_quat([quat_cup[1],  quat_cup[2],  quat_cup[3],  quat_cup[0]])
+            rot_obj  = Rotation.from_quat([quat_obj[1],  quat_obj[2],  quat_obj[3],  quat_obj[0]])
             rot_hand = Rotation.from_quat([quat_hand[1], quat_hand[2], quat_hand[3], quat_hand[0]])
 
-            # hand origin in cup local frame
-            rel_pos = rot_cup.inv().apply(pos_hand - pos_cup)
+            # hand origin expressed in object local frame
+            rel_pos = rot_obj.inv().apply(pos_hand - pos_obj)
 
-            # hand rotation relative to cup
-            xyzw = (rot_cup.inv() * rot_hand).as_quat()  # [x,y,z,w]
+            # hand orientation relative to object
+            xyzw = (rot_obj.inv() * rot_hand).as_quat()             # [x,y,z,w]
             wxyz = np.array([xyzw[3], xyzw[0], xyzw[1], xyzw[2]])  # MuJoCo [w,x,y,z]
 
-            self.model.eq_data[weld_id, 0:3]  = 0.0      # anchor
-            self.model.eq_data[weld_id, 3:6]  = rel_pos  # relative position
-            self.model.eq_data[weld_id, 6:10] = wxyz     # relative quaternion
+            self.model.eq_data[weld_id, 0:3]  = 0.0
+            self.model.eq_data[weld_id, 3:6]  = rel_pos
+            self.model.eq_data[weld_id, 6:10] = wxyz
 
             print(f"  [weld] rel_pos  : {np.round(self.model.eq_data[weld_id, 3:6], 4)}")
             print(f"  [weld] rel_quat : {np.round(self.model.eq_data[weld_id, 6:10], 4)}")
@@ -168,13 +187,10 @@ class MuJoCoEnv:
         self.data.eq_active[weld_id] = active
         mujoco.mj_forward(self.model, self.data)
 
-    def _settle(self, n_steps: int):
-        """
-        Advance physics n_steps with ctrl unchanged, allowing constraints to stabilize.
+    # ── internal ──────────────────────────────────────────────────────────────
 
-        Args:
-            n_steps: number of steps to settle (recommended: 50)
-        """
+    def _settle(self, n_steps: int):
+        """Advance physics n_steps steps to let constraints stabilise."""
         for _ in range(n_steps):
             mujoco.mj_step(self.model, self.data)
         self.viewer.sync()
@@ -192,34 +208,29 @@ class MuJoCoEnv:
 
         q_start = self.data.qpos[:7].copy()
         for i in range(self.n_steps + 1):
-            alpha               = i / self.n_steps
-            q_interp            = (1 - alpha) * q_start + alpha * q_target
-            self.data.ctrl[:7]  = q_interp
-            self.data.ctrl[7]   = GRIPPER_OPEN
+            alpha              = i / self.n_steps
+            q_interp           = (1 - alpha) * q_start + alpha * q_target
+            self.data.ctrl[:7] = q_interp
+            self.data.ctrl[7]  = GRIPPER_OPEN
             mujoco.mj_step(self.model, self.data)
             self.viewer.sync()
             time.sleep(self.step_dt)
 
     def _reset_state(self):
-        """Reset simulation: arm from keyframe 0, cup restored to initial pose."""
+        """Reset simulation: arm from keyframe 0, object restored to initial pose."""
         mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
-        self._reset_cup()
+        self._reset_object()
         mujoco.mj_forward(self.model, self.data)
 
-    def _reset_cup(self):
+    def _reset_object(self):
         """
-        Restore cup freejoint to initial pose.
-        cup body pos="0.5 0.05 0.45", identity quaternion.
+        Restore all free joints to their XML-defined initial pose.
+
+        Scans all joints for type FREE (the robot has no free joints, only
+        manipulated objects do). Copies qpos0 — which encodes the body pos/quat
+        from the XML — back into data.qpos. No object name is hardcoded.
         """
-        try:
-            jnt_id = self.model.joint('cup_free').id
-            adr    = self.model.jnt_qposadr[jnt_id]
-            self.data.qpos[adr + 0] = 0.5
-            self.data.qpos[adr + 1] = 0.05
-            self.data.qpos[adr + 2] = 0.45
-            self.data.qpos[adr + 3] = 1.0
-            self.data.qpos[adr + 4] = 0.0
-            self.data.qpos[adr + 5] = 0.0
-            self.data.qpos[adr + 6] = 0.0
-        except Exception:
-            pass
+        for i in range(self.model.njnt):
+            if self.model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE:
+                adr = self.model.jnt_qposadr[i]
+                self.data.qpos[adr:adr + 7] = self.model.qpos0[adr:adr + 7]

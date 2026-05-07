@@ -30,7 +30,7 @@ from modules.motionPlanner   import MotionPlanner
 # config
 SCENE_XML          = "assets/franka_emika_panda/scene.xml"
 VLM_JSON           = Path("results/vlm_results.json")
-INSTRUCTION        = "pick up the cup"
+INSTRUCTION        = "pick up the bottle"
 
 RETREAT_DIST       = 0.05   # retreat along approach dir for pick_above (m)
 SAFE_Z             = 0.62   # minimum Z during horizontal traversal (m)
@@ -57,13 +57,14 @@ def load_vlm_decision(json_path: Path, instruction: str) -> VLMDecision:
     raise ValueError(f"no record found for instruction='{instruction}' mode='pick'")
 
 
-def read_cup_keypoints(model, data) -> dict:
-    site_map = {"handle": "kp_handle", "body": "kp_body", "rim": "kp_rim"}
-    kps = {}
-    for key, site in site_map.items():
-        sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site)
-        kps[key] = data.site_xpos[sid].copy()
-    return kps
+def read_object_keypoints(model, data) -> dict:
+    from configs.SAP import SAP_KNOWLEDGE_BASE
+    result = {}
+    for part_name in SAP_KNOWLEDGE_BASE:
+        site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, f"kp_{part_name}")
+        if site_id >= 0:
+            result[part_name] = data.site_xpos[site_id].copy()
+    return result
 
 
 def read_tray_keypoint(model, data) -> np.ndarray:
@@ -84,9 +85,9 @@ def main():
     mujoco.mj_resetData(model, data)
     mujoco.mj_forward(model, data)
 
-    cup_kps       = read_cup_keypoints(model, data)
+    pick_kps = read_object_keypoints(model, data)
     surface_point = read_tray_keypoint(model, data)
-    for name, pt in cup_kps.items():
+    for name, pt in pick_kps.items():
         print(f"[kp]    {name:6s} {np.round(pt, 4)}")
     print(f"[kp]    tray   {np.round(surface_point, 4)}")
 
@@ -96,7 +97,7 @@ def main():
 
     t0                = time.perf_counter()
     inst              = ConstraintInstantiator(verbose=False)
-    cost_fn, x0, meta = inst.instantiate(cup_kps, decision, T_current)
+    cost_fn, x0, meta = inst.instantiate(pick_kps, decision, T_current)
     solver            = PoseSolver(max_iter=200, tol=1e-6, verbose=False)
     pick_result       = solver.solve(cost_fn, x0, meta)
     T_pick            = pick_result['T']
