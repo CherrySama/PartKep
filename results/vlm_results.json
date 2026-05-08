@@ -1,6 +1,6 @@
 [
   {
-    "instruction": "pick up the cup",
+    "instruction": "pick up the bottle",
     "mode": "pick",
     "keypoints_2d": {
       "handle": [

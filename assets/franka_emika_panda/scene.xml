@@ -9,7 +9,7 @@
           iterations="200" 
           tolerance="1e-9"
           integrator="Euler"
-          cone="pyramidal"/>   <!-- pyramidal 通常比 elliptic 更稳定 -->
+          cone="pyramidal"/>
 
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
@@ -22,16 +22,17 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
       markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
-    <material name="mat_table"  rgba="0.75 0.60 0.42 1"/>
-    <material name="mat_cup"    rgba="0.90 0.50 0.20 1"/>
-    <material name="mat_handle" rgba="0.70 0.30 0.10 1"/>
-    <material name="mat_tray"   rgba="0.45 0.65 0.50 1"/>
+    <material name="mat_table" rgba="0.75 0.60 0.42 1"/>
+    <material name="mat_tray"  rgba="0.45 0.65 0.50 1"/>
+
+    <!-- bottle mesh: place bottle.stl in assets/franka_emika_panda/assets/ -->
+    <mesh name="bottle_mesh" file="bottle.stl"/>
   </asset>
 
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
 
-    <!-- 地面 + 桌子（加强接触参数） -->
+    <!-- floor + table -->
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"
           solref="0.03 1" solimp="0.9 0.95 0.001"/>
 
@@ -40,28 +41,23 @@
           solref="0.03 1" solimp="0.9 0.95 0.001"
           contype="1" conaffinity="1"/>
 
-    <!-- 杯子（进一步软化接触 + 更高初始位置） -->
-    <body name="cup" pos="0.5 0.05 0.46">
-      <joint type="free" name="cup_free" damping="0.1"/>
-      
-      <geom name="cup_body"   type="cylinder" size="0.03 0.05"
-            pos="0 0 0"      material="mat_cup"    mass="0.15"
-            solref="0.03 1"  solimp="0.96 0.99 0.0005"
-            margin="0.001"
+    <!-- bottle: bottom at local z=-0.065; body z=0.47 puts bottom at 0.405 (just above table at 0.4) -->
+    <body name="bottle" pos="0.5 0.05 0.47">
+      <joint type="free" name="bottle_free" damping="0.1"/>
+
+      <geom name="bottle_geom" type="mesh" mesh="bottle_mesh"
+            rgba="0.72 0.82 0.90 1"
+            mass="0.2"
+            solref="0.03 1" solimp="0.96 0.99 0.0005"
+            margin="0.001" friction="0.95 0.3 0.1"
             contype="1" conaffinity="1"/>
 
-      <geom name="cup_handle" type="box"      size="0.015 0.015 0.035"
-            pos="0 0.045 0"  material="mat_handle" mass="0.01"
-            solref="0.03 1"  solimp="0.96 0.99 0.0005"
-            margin="0.001"
-            contype="1" conaffinity="1"/>
-
-      <site name="kp_handle" pos="0 0.06 0"   size="0.007" rgba="1 0 0 0"/>
-      <site name="kp_body"   pos="0 -0.032 0" size="0.007" rgba="0 1 0 0"/>
-      <site name="kp_rim"    pos="0 0 0.052"  size="0.007" rgba="0 0 1 0"/>
+      <site name="kp_body" pos="0.0276 0  0.000" size="0.007" rgba="0 1 0 0"/>
+      <site name="kp_neck" pos="0.0123 0  0.068" size="0.007" rgba="1 1 0 0"/>
+      <site name="kp_cap"  pos="0      0  0.0951" size="0.007" rgba="0 0 1 0"/>
     </body>
 
-    <!-- 托盘 -->
+    <!-- tray -->
     <body name="tray" pos="0.5 -0.2 0.406">
       <geom name="tray_surface" type="box" size="0.08 0.08 0.005"
             pos="0 0 0" material="mat_tray"
@@ -72,9 +68,9 @@
 
   </worldbody>
 
-  <!-- weld 约束（软化） -->
+  <!-- weld constraint (softened) -->
   <equality>
-    <weld name="cup_weld" body1="cup" body2="hand" active="false" 
+    <weld name="bottle_weld" body1="bottle" body2="hand" active="false"
           solref="0.02 1" solimp="0.95 0.99 0.001"/>
   </equality>
 

@@ -34,7 +34,7 @@ INSTRUCTION        = "pick up the bottle"
 
 RETREAT_DIST       = 0.05   # retreat along approach dir for pick_above (m)
 SAFE_Z             = 0.62   # minimum Z during horizontal traversal (m)
-CONTACT_FWD        = 0.04   # forward offset from pick to contact point (m)
+CONTACT_FWD        = 0.03   # forward offset from pick to contact point (m)
 LIFT_DIST          = 0.10   # lift height after grasp (m)
 PLACE_RETREAT_DIST = 0.05   # Z offset above place target for place_above (m)
 PAUSE              = 0.0    # pause between trajectory segments (s)
