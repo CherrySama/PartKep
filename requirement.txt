@@ -1,0 +1,14 @@
+numpy
+scipy
+Pillow
+opencv-python
+torch
+torchvision
+transformers>=5.0.0
+accelerate
+bitsandbytes
+mujoco>=2.3.3
+fastapi
+uvicorn[standard]
+pydantic
+huggingface_hub
