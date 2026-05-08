@@ -10,7 +10,6 @@ sys.path.insert(0, '.')
 
 import mujoco
 import mujoco.viewer
-from scipy.spatial.transform import Rotation as R
 
 from modules.constraintsInst import ConstraintInstantiator, FINGER_LENGTH
 from modules.poseSolver      import PoseSolver
@@ -27,12 +26,14 @@ CONTACT_FWD  = 0.04
 LIFT_DIST    = 0.10
 
 
-def read_cup_keypoints(model, data) -> dict:
-    site_map = {"handle": "kp_handle", "body": "kp_body", "rim": "kp_rim"}
-    return {
-        key: data.site_xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site)].copy()
-        for key, site in site_map.items()
-    }
+def read_object_keypoints(model, data) -> dict:
+    from configs.SAP import SAP_KNOWLEDGE_BASE
+    result = {}
+    for part_name in SAP_KNOWLEDGE_BASE:
+        site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, f"kp_{part_name}")
+        if site_id >= 0:
+            result[part_name] = data.site_xpos[site_id].copy()
+    return result
 
 
 def main():
@@ -41,7 +42,7 @@ def main():
     mujoco.mj_resetData(model, data)
     mujoco.mj_forward(model, data)
 
-    kps = read_cup_keypoints(model, data)
+    kps = read_object_keypoints(model, data)
     for name, pt in kps.items():
         print(f"[kp]    {name:6s} {np.round(pt, 4)}")
 
@@ -51,34 +52,30 @@ def main():
         confidence=0.0, reasoning="fallback", is_fallback=True
     )
 
-    _p_home = np.array([0.5545, 0.0, 0.6245])
-    _R_home = R.from_rotvec([np.pi, 0, 0]).as_matrix()
-    T_current = np.eye(4)
-    T_current[:3, :3] = _R_home
-    T_current[:3,  3] = _p_home
+    ik        = IKSolver(model, verbose=False)
+    T_current = ik.forward_kinematics(Q_HOME)
 
-    # pose optimisation 
-    t0                = time.perf_counter()
-    inst              = ConstraintInstantiator(verbose=True)
-    cost_fn, x0, meta = inst.instantiate(kps, decision, T_current)
-    solver            = PoseSolver(max_iter=200, tol=1e-6, verbose=True)
-    result            = solver.solve(cost_fn, x0, meta)
-    T_pick            = result['T']
-    approach          = meta['approach_direction']
-    t_pose            = time.perf_counter() - t0
+    # pose optimisation
+    t0                 = time.perf_counter()
+    inst               = ConstraintInstantiator(verbose=True)
+    cost_fn, x0, meta  = inst.instantiate(kps, decision, T_current)
+    solver             = PoseSolver(max_iter=200, tol=1e-6, verbose=True)
+    result             = solver.solve(cost_fn, x0, meta)
+    T_pick             = result['T']
+    approach           = meta['approach_direction']
+    t_pose             = time.perf_counter() - t0
 
     print(f"[pick]  target={meta['grasp_target']}  cost={result['final_cost']:.6f}"
           f"  t={t_pose*1000:.1f}ms")
     print(f"        pos={np.round(T_pick[:3,3], 4)}  gz={np.round(T_pick[:3,2], 3)}"
           f"  approach={np.round(approach, 3)}")
     if meta.get('grasp_axis_target') is not None:
-        gy = T_pick[:3, 1]
+        gy    = T_pick[:3, 1]
         dot_y = float(np.dot(gy, meta['grasp_axis_target']))
         print(f"        grasp_axis={np.round(meta['grasp_axis_target'],3)}"
               f"  gy={np.round(gy,3)}  dot={dot_y:.4f}")
 
     # IK
-    ik     = IKSolver(model, verbose=True)
     ik_res = ik.solve(T_pick, q_init=Q_HOME, n_restarts=10)
     print(f"[ik]    {'ok' if ik_res['success'] else 'FAILED'}"
           f"  pos_err={ik_res['position_error']*1000:.2f}mm")
@@ -122,11 +119,11 @@ def main():
     env     = MuJoCoEnv(scene_xml=SCENE_XML)
     planner = MotionPlanner(env.model, verbose=False)
 
-    wps_0 = planner.plan_to_pose(Q_HOME,       T_safe_above,   q_target=ik_safe['q'])
-    wps_1 = planner.plan_to_pose(wps_0[-1],    T_pick_above,   q_target=ik_above['q'])
-    wps_2 = planner.plan_to_pose(wps_1[-1],    T_pick,         q_target=ik_res['q'])
-    wps_3 = planner.plan_to_pose(wps_2[-1],    T_pick_contact, q_target=ik_contact['q'])
-    wps_l = planner.plan_to_pose(wps_3[-1],    T_lift,         q_target=ik_lift['q'])
+    wps_0 = planner.plan_to_pose(Q_HOME,    T_safe_above,   q_target=ik_safe['q'])
+    wps_1 = planner.plan_to_pose(wps_0[-1], T_pick_above,   q_target=ik_above['q'])
+    wps_2 = planner.plan_to_pose(wps_1[-1], T_pick,         q_target=ik_res['q'])
+    wps_3 = planner.plan_to_pose(wps_2[-1], T_pick_contact, q_target=ik_contact['q'])
+    wps_l = planner.plan_to_pose(wps_3[-1], T_lift,         q_target=ik_lift['q'])
 
     total = len(wps_0) + len(wps_1) + len(wps_2) + len(wps_3) + len(wps_l)
     input(f"\n{total} waypoints. Press Enter to execute...")
