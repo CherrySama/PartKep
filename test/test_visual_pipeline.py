@@ -23,21 +23,21 @@ from modules.vlmDecider import build_annotated_image
 TEST_CASES = [
     {
         "instruction": "pick up the cup",
-        "image_path":  PROJECT_ROOT / "images/cup3.jpg",
+        "image_path":  PROJECT_ROOT / "images/22.jpg",
     },
     {
         "instruction": "pick up the leftmost cup",
-        "image_path":  PROJECT_ROOT / "images/cups.png",
+        "image_path":  PROJECT_ROOT / "images/24.png",
     },
     {
         "instruction":      "pick up the cup",
         "detection_prompt": "blue ceramic mug on the left side of the table",
-        "image_path":       PROJECT_ROOT / "images/kitchen.png",
+        "image_path":       PROJECT_ROOT / "images/74.png",
     },
     {
         "instruction":      "pick up the bottle",
         "detection_prompt": "brown bottle with VOSS label",
-        "image_path":       PROJECT_ROOT / "images/kitchen.png",
+        "image_path":       PROJECT_ROOT / "images/74.png",
     },
 ]
 
