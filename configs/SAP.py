@@ -2,10 +2,13 @@
 Created by Yinghao Ho on 2026-2-23
 
 SAP (Semantic Affordance Primitive) knowledge base.
-Each part name maps to a fixed set of geometric manipulation attributes.
+Each part name maps to base geometric manipulation attributes.  Object-specific
+body strategy selection is performed explicitly by ConstraintInstantiator.
 contact_mode: 'grasp' | 'avoid' | 'place'
 approach_direction for lateral parts (handle/neck) is a reference vector,
 corrected at runtime by ConstraintInstantiator._compute_actual_approach.
+The body entry is object-conditioned at runtime: bottle.body uses a lateral
+world-XY approach, while cup/mug/bowl.body use the configured top-down axes.
 """
 
 from dataclasses import dataclass
@@ -118,7 +121,9 @@ SAP_KNOWLEDGE_BASE: Dict[str, 'SAP'] = {
         )
     ),
 
-    # body: top-down grasp (bowl/bottle fallback).
+    # body is object-conditioned in ConstraintInstantiator:
+    # bottle -> lateral world-XY approach with a tangential opening axis;
+    # cup/mug/bowl -> the top-down reference axes configured below.
     "body": SAP(
         part_name="body",
         approach_direction=np.array([0.0, 0.0, -1.0]),
@@ -129,9 +134,11 @@ SAP_KNOWLEDGE_BASE: Dict[str, 'SAP'] = {
             "The main cylindrical or rounded bulk section of an object, "
             "forming the largest and most structurally stable region. Wider "
             "than the neck, located below the rim, with a relatively uniform "
-            "cross-section throughout. Affords top-down grasping: gripper "
-            "descends vertically from above and closes horizontally around "
-            "the widest cross-section to achieve a stable, symmetric grip."
+            "cross-section throughout. Its grasp strategy depends explicitly "
+            "on the parsed object class: a bottle body is approached laterally "
+            "in the world XY plane with a perpendicular tangential opening "
+            "axis; cup, mug, and bowl bodies use a top-down approach and close "
+            "horizontally around the widest cross-section."
         )
     ),
 

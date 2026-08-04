@@ -57,7 +57,7 @@ def main():
 
     # pose optimisation
     t0                 = time.perf_counter()
-    inst               = ConstraintInstantiator(verbose=True)
+    inst               = ConstraintInstantiator(object_class="bottle", verbose=True)
     cost_fn, x0, meta  = inst.instantiate(kps, decision, T_current)
     solver             = PoseSolver(max_iter=200, tol=1e-6, verbose=True)
     result             = solver.solve(cost_fn, x0, meta)

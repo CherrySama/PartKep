@@ -28,6 +28,8 @@ class MuJoCoEnv:
         scene_xml : path to scene.xml
         n_steps   : interpolation steps for move_to (debug)
         step_dt   : sleep (s) per step in move_to
+        render    : launch the MuJoCo viewer when true
+        realtime  : preserve execution sleeps when true
     """
 
     def __init__(
@@ -35,18 +37,23 @@ class MuJoCoEnv:
         scene_xml: str   = "assets/franka_emika_panda/scene.xml",
         n_steps:   int   = 150,
         step_dt:   float = 0.005,
+        render:    bool  = True,
+        realtime:  bool  = True,
     ):
         self.model   = mujoco.MjModel.from_xml_path(scene_xml)
         self.data    = mujoco.MjData(self.model)
         self.n_steps = n_steps
         self.step_dt = step_dt
+        self.realtime = realtime
 
         self._reset_state()
 
-        self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
-        self.viewer.cam.distance  = 2.0
-        self.viewer.cam.azimuth   = 135
-        self.viewer.cam.elevation = -20
+        self.viewer = None
+        if render:
+            self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
+            self.viewer.cam.distance  = 2.0
+            self.viewer.cam.azimuth   = 135
+            self.viewer.cam.elevation = -20
 
         print(f"[MuJoCoEnv] home config: {np.round(Q_HOME, 4)}")
 
@@ -73,8 +80,8 @@ class MuJoCoEnv:
                 self.data.ctrl[:7] = q
                 for _ in range(STEPS_PER_WAYPOINT):
                     mujoco.mj_step(self.model, self.data)
-                self.viewer.sync()
-                time.sleep(SLEEP_PER_WAYPOINT)
+                self._sync()
+                self._sleep(SLEEP_PER_WAYPOINT)
 
             for action in post_actions:
                 if action == 'close_gripper':
@@ -104,8 +111,8 @@ class MuJoCoEnv:
             self.data.ctrl[7]  = gripper_ctrl
             for _ in range(STEPS_PER_WAYPOINT):
                 mujoco.mj_step(self.model, self.data)
-            self.viewer.sync()
-            time.sleep(SLEEP_PER_WAYPOINT)
+            self._sync()
+            self._sleep(SLEEP_PER_WAYPOINT)
 
     # ── public interface ──────────────────────────────────────────────────────
 
@@ -122,7 +129,8 @@ class MuJoCoEnv:
 
     def close(self):
         """Close the viewer."""
-        self.viewer.close()
+        if self.viewer is not None:
+            self.viewer.close()
 
     # ── gripper & weld ────────────────────────────────────────────────────────
 
@@ -130,28 +138,39 @@ class MuJoCoEnv:
         self.data.ctrl[7] = GRIPPER_OPEN if open else GRIPPER_CLOSE
         for _ in range(200):
             mujoco.mj_step(self.model, self.data)
-            self.viewer.sync()
-            time.sleep(SLEEP_PER_WAYPOINT)
+            self._sync()
+            self._sleep(SLEEP_PER_WAYPOINT)
 
-    def _set_weld(self, active: bool):
+    def _find_hand_weld_id(self):
+        """Return the weld equality involving the hand, or None if absent."""
+        hand_id = self.model.body('hand').id
+        for i in range(self.model.neq):
+            if self.model.eq_type[i] == mujoco.mjtEq.mjEQ_WELD:
+                if self.model.eq_obj1id[i] == hand_id or self.model.eq_obj2id[i] == hand_id:
+                    return i
+        return None
+
+    def has_hand_weld(self) -> bool:
+        """Return whether the scene provides a weld equality involving the hand."""
+        return self._find_hand_weld_id() is not None
+
+    def is_hand_weld_active(self) -> bool:
+        """Return whether the hand weld exists and is currently active."""
+        weld_id = self._find_hand_weld_id()
+        return weld_id is not None and bool(self.data.eq_active[weld_id])
+
+    def _set_weld(self, active: bool) -> bool:
         """
         Activate or deactivate the weld constraint between the manipulated object
         and the hand. The weld and object body are discovered dynamically by
         scanning model equalities — no object name is hardcoded.
         """
         hand_id = self.model.body('hand').id
-
-        # find the weld constraint that involves 'hand'
-        weld_id = None
-        for i in range(self.model.neq):
-            if self.model.eq_type[i] == mujoco.mjtEq.mjEQ_WELD:
-                if self.model.eq_obj1id[i] == hand_id or self.model.eq_obj2id[i] == hand_id:
-                    weld_id = i
-                    break
+        weld_id = self._find_hand_weld_id()
 
         if weld_id is None:
             print("[weld] no weld constraint involving 'hand' found")
-            return
+            return False
 
         if active:
             # infer object body: the weld endpoint that is not 'hand'
@@ -186,6 +205,7 @@ class MuJoCoEnv:
 
         self.data.eq_active[weld_id] = active
         mujoco.mj_forward(self.model, self.data)
+        return bool(self.data.eq_active[weld_id]) if active else True
 
     # ── internal ──────────────────────────────────────────────────────────────
 
@@ -193,7 +213,7 @@ class MuJoCoEnv:
         """Advance physics n_steps steps to let constraints stabilise."""
         for _ in range(n_steps):
             mujoco.mj_step(self.model, self.data)
-        self.viewer.sync()
+        self._sync()
 
     def move_to(self, q_target: np.ndarray, label: str = ""):
         """
@@ -213,8 +233,8 @@ class MuJoCoEnv:
             self.data.ctrl[:7] = q_interp
             self.data.ctrl[7]  = GRIPPER_OPEN
             mujoco.mj_step(self.model, self.data)
-            self.viewer.sync()
-            time.sleep(self.step_dt)
+            self._sync()
+            self._sleep(self.step_dt)
 
     def _reset_state(self):
         """Reset simulation: arm from keyframe 0, object restored to initial pose."""
@@ -234,3 +254,11 @@ class MuJoCoEnv:
             if self.model.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE:
                 adr = self.model.jnt_qposadr[i]
                 self.data.qpos[adr:adr + 7] = self.model.qpos0[adr:adr + 7]
+
+    def _sync(self):
+        if self.viewer is not None:
+            self.viewer.sync()
+
+    def _sleep(self, duration: float):
+        if self.realtime:
+            time.sleep(duration)

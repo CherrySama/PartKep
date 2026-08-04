@@ -131,7 +131,7 @@ if __name__ == "__main__":
             'rim':    np.array([0.45,  0.00,  0.16]),
             'body':   np.array([0.45,  0.00,  0.08]),
         }
-        inst = ConstraintInstantiator(verbose=False)
+        inst = ConstraintInstantiator(object_class="cup", verbose=False)
         return inst.instantiate(keypoints_3d, FALLBACK_DECISION)
 
     cost_fn, x0, meta = make_cup_problem()

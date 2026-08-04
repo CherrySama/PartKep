@@ -60,28 +60,128 @@ def _compute_actual_approach(
         sap:           SAP,
         keypoint_3d:   np.ndarray,
         object_center: np.ndarray,
+        object_class:  Optional[str] = None,
 ) -> np.ndarray:
     """
     Runtime correction of approach_direction.
 
-    Lateral parts (handle, neck, body): replace SAP reference [1,0,0] with the
+    Lateral parts (handle, neck): replace the SAP reference vector with the
     horizontal unit vector from keypoint toward object center, so the gripper
-    approaches from outside the object.
-    Other parts (cap, surface): use SAP approach_direction directly.
+    approaches from outside the object.  ``body`` is object-conditioned:
+    bottle bodies use the same lateral rule, while cup/mug/bowl bodies use
+    the SAP top-down direction.
 
     Returns normalised approach vector, shape=(3,).
     """
-    LATERAL_PARTS = {"handle", "neck", "body"}
-
-    if part_name in LATERAL_PARTS:
-        # inward direction from keypoint toward object center = approach from outside
-        delta_xy = object_center[:2] - keypoint_3d[:2]
-        norm = np.linalg.norm(delta_xy)
-        if norm < 1e-6:
+    if part_name == "body":
+        strategy = _resolve_body_strategy(object_class)
+        if strategy == "top_down":
             return sap.approach_direction.copy()
-        return np.array([delta_xy[0] / norm, delta_xy[1] / norm, 0.0])
-    else:
-        return sap.approach_direction.copy()
+        # A bottle body is lateral even when no other keypoint is available to
+        # estimate the object centre.  The non-degenerate path below still
+        # uses the existing world-XY radial calculation.
+        return _compute_lateral_approach(
+            keypoint_3d, object_center, fallback=np.array([1.0, 0.0, 0.0])
+        )
+
+    if part_name in {"handle", "neck"}:
+        return _compute_lateral_approach(
+            keypoint_3d, object_center, fallback=sap.approach_direction
+        )
+
+    # Other parts (cap, surface): use SAP approach_direction directly.
+    return sap.approach_direction.copy()
+
+
+BODY_STRATEGIES = {
+    "bottle": "lateral",
+    "cup": "top_down",
+    "mug": "top_down",
+    "bowl": "top_down",
+}
+
+
+def _resolve_body_strategy(object_class: Optional[str]) -> str:
+    """Return the explicit strategy for a ``body`` part or fail clearly."""
+    if not isinstance(object_class, str) or not object_class.strip():
+        raise ValueError(
+            "body grasp requires an explicit supported object_class "
+            "from TaskParser.object_label"
+        )
+    normalized = object_class.strip().lower()
+    try:
+        return BODY_STRATEGIES[normalized]
+    except KeyError as exc:
+        supported = ", ".join(sorted(BODY_STRATEGIES))
+        raise ValueError(
+            f"unsupported object_class '{object_class}' for body grasp; "
+            f"supported classes: {supported}"
+        ) from exc
+
+
+def _compute_lateral_approach(
+        keypoint_3d: np.ndarray,
+        object_center: np.ndarray,
+        fallback: np.ndarray,
+) -> np.ndarray:
+    """Compute the existing horizontal radial approach with an explicit fallback."""
+    # Inward direction from keypoint toward object center = approach from outside.
+    delta_xy = object_center[:2] - keypoint_3d[:2]
+    norm = np.linalg.norm(delta_xy)
+    if norm < 1e-6:
+        return np.asarray(fallback, dtype=float).copy()
+    return np.array([delta_xy[0] / norm, delta_xy[1] / norm, 0.0])
+
+
+def _compute_actual_grasp_axis(
+        part_name: str,
+        sap: SAP,
+        approach_dir: np.ndarray,
+        object_class: Optional[str],
+) -> np.ndarray:
+    """Resolve the opening axis without changing handle/neck behavior."""
+    if part_name != "body":
+        return sap.grasp_axis.copy()
+
+    strategy = _resolve_body_strategy(object_class)
+    if strategy == "top_down":
+        return sap.grasp_axis.copy()
+
+    # For a bottle body, use the horizontal tangent to the radial approach.
+    # This keeps the opening axis orthogonal for every valid world-XY radial
+    # direction, including the current upright bottle fixture.
+    tangent = np.cross(np.array([0.0, 0.0, 1.0]), approach_dir)
+    norm = np.linalg.norm(tangent)
+    if norm < 1e-8:
+        raise ValueError(
+            "bottle.body lateral frame is degenerate: "
+            "approach and opening axes cannot be parallel"
+        )
+    grasp_axis = tangent / norm
+    if abs(float(np.dot(approach_dir, grasp_axis))) > 1e-6:
+        raise ValueError(
+            "bottle.body lateral frame is degenerate: "
+            "approach and opening axes cannot be parallel"
+        )
+    return grasp_axis
+
+
+def _resolve_grasp_axes(
+        part_name: str,
+        sap: SAP,
+        keypoint_3d: np.ndarray,
+        object_center: np.ndarray,
+        object_class: Optional[str],
+) -> Tuple[np.ndarray, np.ndarray, Optional[str]]:
+    """Resolve approach/opening axes and report the body strategy for diagnostics."""
+    approach_dir = _compute_actual_approach(
+        part_name, sap, keypoint_3d, object_center, object_class
+    )
+    grasp_axis = _compute_actual_grasp_axis(
+        part_name, sap, approach_dir, object_class
+    )
+    strategy = _resolve_body_strategy(object_class) if part_name == "body" else None
+    return approach_dir, grasp_axis, strategy
 
 
 def _compute_rvec_init(
@@ -226,10 +326,42 @@ def _build_cost_fn(
 
     return cost_fn, cost_breakdown_fn
 
-def compute_place_pose(T_pick: np.ndarray, surface_point: np.ndarray) -> np.ndarray:
-    T_place = T_pick.copy()
-    T_place[:3, 3] = surface_point - T_pick[:3, 2] * FINGER_LENGTH
-    return T_place
+def compute_object_hand_transform(
+    T_base_object_pick: np.ndarray,
+    T_base_hand_pick: np.ndarray,
+) -> np.ndarray:
+    """Return the grasp-time hand pose expressed in the object frame."""
+    return np.linalg.inv(T_base_object_pick) @ T_base_hand_pick
+
+
+def compute_object_place_pose(
+    surface_point: np.ndarray,
+    support_point_object: np.ndarray,
+    R_base_object_place: np.ndarray = np.eye(3),
+) -> np.ndarray:
+    """Place an object support point on a surface with an explicit orientation."""
+    surface_point = np.asarray(surface_point, dtype=float)
+    support_point_object = np.asarray(support_point_object, dtype=float)
+    R_base_object_place = np.asarray(R_base_object_place, dtype=float)
+    if surface_point.shape != (3,) or support_point_object.shape != (3,):
+        raise ValueError("surface and object support points must have shape (3,)")
+    if R_base_object_place.shape != (3, 3):
+        raise ValueError("R_base_object_place must have shape (3,3)")
+
+    T_base_object_place = np.eye(4)
+    T_base_object_place[:3, :3] = R_base_object_place
+    T_base_object_place[:3, 3] = (
+        surface_point - R_base_object_place @ support_point_object
+    )
+    return T_base_object_place
+
+
+def compute_place_pose(
+    T_base_object_place: np.ndarray,
+    T_object_hand: np.ndarray,
+) -> np.ndarray:
+    """Return the hand pose that preserves the grasp at the object place pose."""
+    return T_base_object_place @ T_object_hand
 
 class ConstraintInstantiator:
     """
@@ -240,7 +372,12 @@ class ConstraintInstantiator:
     Place mode: single surface target; builds C1/C2/C4 cost function.
     """
 
-    def __init__(self, verbose: bool = True):
+    def __init__(self, verbose: bool = True, object_class: Optional[str] = None):
+        self.object_class = (
+            object_class.strip().lower()
+            if isinstance(object_class, str)
+            else object_class
+        )
         self.verbose = verbose
 
     def instantiate(
@@ -257,12 +394,17 @@ class ConstraintInstantiator:
             vlm_decision: VLMDecision from VLMDecider.decide()
             T_current:    shape=(4,4) current end-effector transform from FK(q_current)
 
+        ``object_class`` is supplied to the constructor from
+        ``TaskParser.parse(...).object_label``.  It is required only when a
+        ``body`` keypoint is present.
+
         Returns:
             (cost_fn, x0, meta)
 
         Raises:
             ValueError: keypoints_3d contains both grasp and place parts (semantic conflict)
             ValueError: keypoints_3d contains neither grasp nor place parts
+            ValueError: body part has no supported explicit object_class
             KeyError:   part name not in SAP knowledge base
         """
         grasp_kps: Dict[str, np.ndarray]               = {}
@@ -325,15 +467,17 @@ class ConstraintInstantiator:
 
         for part_name, keypoint_3d in grasp_kps.items():
             sap          = get_sap_strict(part_name)
-            approach_dir = _compute_actual_approach(part_name, sap, keypoint_3d, object_center)
+            approach_dir, grasp_axis, body_strategy = _resolve_grasp_axes(
+                part_name, sap, keypoint_3d, object_center, self.object_class
+            )
             x0_pos       = keypoint_3d - approach_dir * FINGER_LENGTH
-            x0_rot       = _compute_rvec_init(approach_dir, sap.grasp_axis)
+            x0_rot       = _compute_rvec_init(approach_dir, grasp_axis)
             x0           = np.concatenate([x0_pos, x0_rot])
 
             cost_fn, breakdown_fn = _build_cost_fn(
                 keypoint_3d  = keypoint_3d,
                 approach_dir = approach_dir,
-                grasp_axis   = sap.grasp_axis,
+                grasp_axis   = grasp_axis,
                 avoid_kps    = avoid_kps,
                 vlm_decision = vlm_decision,
                 mode         = "pick",
@@ -362,7 +506,8 @@ class ConstraintInstantiator:
                     'part_name':    part_name,
                     'approach_dir': approach_dir,
                     'keypoint_3d':  keypoint_3d,
-                    'grasp_axis':   sap.grasp_axis,
+                    'grasp_axis':   grasp_axis,
+                    'body_strategy': body_strategy,
                 }
 
         if self.verbose:
@@ -377,6 +522,7 @@ class ConstraintInstantiator:
             'approach_direction':  best_meta_part['approach_dir'],
             'keypoint_3d':         best_meta_part['keypoint_3d'],
             'grasp_axis_target':   best_meta_part['grasp_axis'],
+            'body_strategy':       best_meta_part['body_strategy'],
             'vlm_decision':        vlm_decision,
             'cost_breakdown_fn':   best_breakdown_fn,
             'candidate_best_cost': best_cost,
