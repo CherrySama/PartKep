@@ -2,6 +2,7 @@ numpy
 scipy
 Pillow
 opencv-python
+pyrealsense2
 torch
 torchvision
 transformers>=5.0.0

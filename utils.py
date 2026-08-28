@@ -104,15 +104,20 @@ class CoordinateTransformer:
         y0, y1 = int(np.floor(y)), min(int(np.floor(y)) + 1, h - 1)
         dx, dy = x - x0, y - y0
 
-        d00 = float(depth_map[y0, x0])
-        d01 = float(depth_map[y0, x1])
-        d10 = float(depth_map[y1, x0])
-        d11 = float(depth_map[y1, x1])
+        samples = (
+            (float(depth_map[y0, x0]), (1 - dx) * (1 - dy)),
+            (float(depth_map[y0, x1]), dx * (1 - dy)),
+            (float(depth_map[y1, x0]), (1 - dx) * dy),
+            (float(depth_map[y1, x1]), dx * dy),
+        )
+        valid = [(value, weight) for value, weight in samples if value > 0.0]
+        if not valid:
+            return 0.0
 
-        return (d00 * (1 - dx) * (1 - dy) +
-                d01 * dx * (1 - dy) +
-                d10 * (1 - dx) * dy +
-                d11 * dx * dy)
+        total_weight = sum(weight for _, weight in valid)
+        if total_weight <= 0.0:
+            return 0.0
+        return sum(value * weight for value, weight in valid) / total_weight
 
     @staticmethod
     def verify_transform(bbox_norm: List[float],

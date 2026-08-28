@@ -112,6 +112,22 @@ TEST_CASES = [
 
 **Output:** `images/results/pipeline_results.json` and annotated images in `images/results/`.
 
+For the current Panthera D435 fixture and eye-to-hand calibration, run the
+offline bottle chain explicitly:
+
+```bash
+python scripts/run_d435_bottle_pipeline.py \
+  --fixture-dir /home/sunteng/Desktop/Panthera-HT/Panthera-HT_SDK/panthera_python/scripts/realsense_fixture \
+  --calibration /home/sunteng/Desktop/Panthera-HT/Panthera-HT_SDK/panthera_python/scripts/eye_to_hand_calibration.json \
+  --output-dir /tmp/partkep_v0_bottle \
+  --device cpu
+```
+
+The SDK fixture stores `bgr8` data with OpenCV, so the command converts it to
+RGB before GroundingDINO/SAM3. Its aligned raw depth is converted with the
+recorded `depth_scale_m_per_unit`; `T_base_camera` is used directly under the
+stored `p_base = T_base_camera @ p_camera` convention.
+
 ---
 
 ### Step 2 — VLM Constraint Decision
@@ -215,6 +231,12 @@ PartKep/
 │   ├── groundingdino_cfg.py    # GroundingDINO thresholds and model path
 │   ├── sam3_cfg.py             # SAM3 model path and device config
 │   └── camera_config.py        # Camera intrinsics / extrinsics
+├── vision/
+│   ├── d435_fixture.py          # Offline RGB/depth fixture contract
+│   └── __init__.py
+├── scripts/
+│   ├── capture_d435_fixture.py  # Stationary D435 capture CLI
+│   └── run_d435_bottle_pipeline.py # Offline bottle vision and 2D->3D CLI
 ├── modules/
 │   ├── taskParser.py           # Natural-language instruction → TaskSpec
 │   ├── groundingdino.py        # Object detection (GroundingDINO wrapper)

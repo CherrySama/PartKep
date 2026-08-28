@@ -464,6 +464,7 @@ class ConstraintInstantiator:
         best_breakdown_fn = None
         best_x0           = None
         best_meta_part    = None
+        candidate_solutions = []
 
         for part_name, keypoint_3d in grasp_kps.items():
             sap          = get_sap_strict(part_name)
@@ -493,6 +494,16 @@ class ConstraintInstantiator:
             else:
                 cost_val          = cost_at_x0
                 best_x0_candidate = x0
+
+            candidate_solutions.append({
+                'part_name':       part_name,
+                'partkep_cost':    cost_val,
+                'keypoint_3d':     keypoint_3d.copy(),
+                'approach_dir':    approach_dir.copy(),
+                'grasp_axis':      grasp_axis.copy(),
+                'body_strategy':   body_strategy,
+                'x_solution':      best_x0_candidate.copy(),
+            })
 
             if self.verbose:
                 print(f"  [{part_name}] approach={np.round(approach_dir, 3)} cost={cost_val:.4f}")
@@ -526,6 +537,7 @@ class ConstraintInstantiator:
             'vlm_decision':        vlm_decision,
             'cost_breakdown_fn':   best_breakdown_fn,
             'candidate_best_cost': best_cost,
+            'candidate_solutions': candidate_solutions,
         }
 
         return best_cost_fn, best_x0, meta

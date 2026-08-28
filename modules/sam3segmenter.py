@@ -38,6 +38,8 @@ class SAM3Segmenter:
         cropped_image: Union[np.ndarray, Image.Image],
         label:         str,
         crop_bbox:     List[int],
+        confidence_threshold: float = 0.5,
+        mask_threshold:       float = 0.5,
     ) -> List[Dict]:
         """Segment all parts of an object and extract one keypoint per part.
 
@@ -45,6 +47,8 @@ class SAM3Segmenter:
             cropped_image: cropped object region (PIL or numpy)
             label:         object class, e.g. 'cup' -- used to look up PartConfig
             crop_bbox:     [x1,y1,x2,y2] of the crop in original image coordinates
+            confidence_threshold: minimum SAM3 instance confidence
+            mask_threshold: probability threshold used to build each mask
 
         Returns list of dicts:
             part_name  -- SAP knowledge base key (e.g. 'handle')
@@ -53,6 +57,15 @@ class SAM3Segmenter:
             score      -- SAM3 confidence
             mask       -- binary mask as uint8 ndarray (H, W)
         """
+        confidence_threshold = float(confidence_threshold)
+        mask_threshold = float(mask_threshold)
+        for name, value in (
+            ("confidence_threshold", confidence_threshold),
+            ("mask_threshold", mask_threshold),
+        ):
+            if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be finite and within [0, 1], got {value}")
+
         if isinstance(cropped_image, np.ndarray):
             image_pil = Image.fromarray(cropped_image)
         elif isinstance(cropped_image, Image.Image):
@@ -86,8 +99,8 @@ class SAM3Segmenter:
 
                 results_raw = self.processor.post_process_instance_segmentation(
                     outputs,
-                    threshold=0.5,
-                    mask_threshold=0.5,
+                    threshold=confidence_threshold,
+                    mask_threshold=mask_threshold,
                     target_sizes=img_inputs.get("original_sizes").tolist(),
                 )
 
