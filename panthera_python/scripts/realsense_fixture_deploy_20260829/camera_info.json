@@ -1,0 +1,27 @@
+{
+  "color_intrinsics": {
+    "fx": 602.735107421875,
+    "fy": 602.167236328125,
+    "cx": 319.1683654785156,
+    "cy": 247.90182495117188,
+    "width": 640,
+    "height": 480
+  },
+  "depth_intrinsics": {
+    "fx": 384.05657958984375,
+    "fy": 384.05657958984375,
+    "cx": 324.505859375,
+    "cy": 242.8961944580078,
+    "width": 640,
+    "height": 480
+  },
+  "depth_scale_m_per_unit": 0.0010000000474974513,
+  "timestamp": "2026-08-29 01:02:29",
+  "timestamp_ns": 1787936549284816611,
+  "color_frame_number": 90,
+  "depth_frame_number": 58,
+  "color_device_timestamp_ms": 1787936549228.0698,
+  "depth_device_timestamp_ms": 1787936549228.0518,
+  "color_format": "bgr8",
+  "depth_alignment": "depth_to_color"
+}
